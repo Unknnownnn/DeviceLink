@@ -1,0 +1,25 @@
+# Gitignore for DeviceLink (Android & Windows)
+
+# Android App
+android_app/build/
+android_app/app/build/
+android_app/.gradle/
+android_app/.idea/
+android_app/local.properties
+android_app/**/*.iml
+android_app/.cxx/
+*.hprof
+
+# Windows Agent
+**/__pycache__/
+**/*.pyc
+windows_agent/.venv/
+windows_agent/venv/
+windows_agent/env/
+windows_agent/.env
+windows_agent/*.png
+windows_agent/*.key
+
+# General OS Files
+.DS_Store
+Thumbs.db
