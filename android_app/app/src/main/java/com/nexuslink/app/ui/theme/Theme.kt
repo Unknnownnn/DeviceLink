@@ -4,12 +4,13 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 
 private val NexusDarkColorScheme = darkColorScheme(
-    primary          = Violet400,
-    onPrimary        = Surface900,
-    primaryContainer = Indigo800,
-    onPrimaryContainer = Violet200,
+    primary          = Blue400,
+    onPrimary        = Color.White,
+    primaryContainer = Surface800,
+    onPrimaryContainer = Blue200,
 
     secondary        = Cyan400,
     onSecondary      = Surface900,
@@ -32,7 +33,7 @@ private val NexusDarkColorScheme = darkColorScheme(
     errorContainer   = Rose500.copy(alpha = 0.2f),
     onErrorContainer = Rose400,
 
-    outline          = Violet300.copy(alpha = 0.3f),
+    outline          = Blue300.copy(alpha = 0.3f),
     outlineVariant   = Surface600,
 )
 

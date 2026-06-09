@@ -57,6 +57,7 @@ class ConnectionViewModel @Inject constructor(
     val uiState = connectionManager.uiState
     val toastEvents = connectionManager.toastEvents
     val nlpResponses = connectionManager.nlpResponses
+    val deckShortcuts = connectionManager.deckShortcuts
 
     private val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {

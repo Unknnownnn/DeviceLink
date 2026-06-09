@@ -87,8 +87,17 @@ class NexusLinkServer:
                 await websocket.close(1008, "Handshake failed")
                 return
 
-            log.info("Secure session established with %s", peer)
-            print(f"[Server] ✓ Secure session with {peer}")
+            log.info("Secure session established with %s", websocket.remote_address)
+            print(f"[Server] ✓ Secure session with {websocket.remote_address}")
+
+            # Send dynamic deck shortcuts
+            from nexuslink.settings_manager import SettingsManager
+            settings = SettingsManager()
+            shortcuts_msg = NexusMessage(
+                type="sync_shortcuts",
+                payload={"shortcuts": settings.get_deck_shortcuts()}
+            )
+            await websocket.send(cipher.encrypt(shortcuts_msg.to_bytes()))
 
             await self._run_session(websocket, cipher)
 

@@ -57,6 +57,9 @@ class ConnectionManager @Inject constructor(
     private val _nlpResponses = MutableSharedFlow<String>()
     val nlpResponses: SharedFlow<String> = _nlpResponses
 
+    private val _deckShortcuts = MutableStateFlow<List<org.json.JSONObject>>(emptyList())
+    val deckShortcuts: StateFlow<List<org.json.JSONObject>> = _deckShortcuts
+
     private var client: NexusWebSocketClient? = null
     private val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private var lastClipboardSent = ""
@@ -117,6 +120,15 @@ class ConnectionManager @Inject constructor(
                         } else if (event.type == "nlp_response") {
                             val result = event.payload.optString("result", "No result")
                             _nlpResponses.emit(result)
+                        } else if (event.type == "sync_shortcuts") {
+                            val arr = event.payload.optJSONArray("shortcuts")
+                            val shortcuts = mutableListOf<org.json.JSONObject>()
+                            if (arr != null) {
+                                for (i in 0 until arr.length()) {
+                                    shortcuts.add(arr.getJSONObject(i))
+                                }
+                            }
+                            _deckShortcuts.value = shortcuts
                         } else {
                             _fileEvents.emit(event)
                         }

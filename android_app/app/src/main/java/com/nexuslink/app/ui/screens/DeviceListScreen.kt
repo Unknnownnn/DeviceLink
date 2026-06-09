@@ -70,8 +70,8 @@ import com.nexuslink.app.ui.theme.OnSurfaceDim
 import com.nexuslink.app.ui.theme.Surface600
 import com.nexuslink.app.ui.theme.Surface700
 import com.nexuslink.app.ui.theme.Surface800
-import com.nexuslink.app.ui.theme.Violet400
-import com.nexuslink.app.ui.theme.Violet200
+import com.nexuslink.app.ui.theme.Blue400
+import com.nexuslink.app.ui.theme.Blue200
 import com.nexuslink.app.ui.viewmodels.DiscoveryViewModel
 import kotlinx.coroutines.delay
 
@@ -99,7 +99,7 @@ fun DeviceListScreen(
                             text = "DeviceLink",
                             style = MaterialTheme.typography.headlineLarge,
                             fontWeight = FontWeight.Bold,
-                            color = Violet200,
+                            color = Blue200,
                         )
                         Text(
                             text = "Local Network Devices",
@@ -121,7 +121,7 @@ fun DeviceListScreen(
         floatingActionButton = {
             androidx.compose.material3.FloatingActionButton(
                 onClick = onManualScan,
-                containerColor = Violet400,
+                containerColor = Blue400,
                 contentColor = Color.White
             ) {
                 Icon(
@@ -245,17 +245,17 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
                         .size(52.dp)
                         .background(
                             Brush.radialGradient(
-                                colors = listOf(Violet400.copy(alpha = 0.3f), Color.Transparent)
+                                colors = listOf(Blue400.copy(alpha = 0.3f), Color.Transparent)
                             ),
                             CircleShape,
                         )
-                        .border(1.dp, Violet400.copy(alpha = 0.4f), CircleShape),
+                        .border(1.dp, Blue400.copy(alpha = 0.4f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = Icons.Default.Computer,
                         contentDescription = null,
-                        tint = Violet400,
+                        tint = Blue400,
                         modifier = Modifier.size(28.dp),
                     )
                 }
@@ -305,7 +305,7 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
                     Icon(
                         imageVector = Icons.Default.Link,
                         contentDescription = "Connect",
-                        tint = Violet400,
+                        tint = Blue400,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -339,16 +339,16 @@ private fun EmptyDiscoveryState() {
                 modifier = Modifier
                     .size(100.dp)
                     .background(
-                        Violet400.copy(alpha = alpha * 0.15f),
+                        Blue400.copy(alpha = alpha * 0.15f),
                         CircleShape,
                     )
-                    .border(2.dp, Violet400.copy(alpha = alpha * 0.5f), CircleShape),
+                    .border(2.dp, Blue400.copy(alpha = alpha * 0.5f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Default.Search,
                     contentDescription = null,
-                    tint = Violet400.copy(alpha = alpha),
+                    tint = Blue400.copy(alpha = alpha),
                     modifier = Modifier.size(48.dp),
                 )
             }

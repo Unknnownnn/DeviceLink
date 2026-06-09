@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import webbrowser
+import shlex
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -14,6 +15,7 @@ from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from nexuslink.crypto.session import SessionCipher
 from nexuslink.models import NexusMessage
 from nexuslink.server.handlers import HandlerRegistry
+from nexuslink.settings_manager import SettingsManager
 
 log = logging.getLogger("nexuslink.orchestrator")
 
@@ -23,23 +25,8 @@ class SanitizationSandbox:
     Executes tool calls strictly ensuring path-jailing and process whitelisting.
     NEVER uses shell=True.
     """
-    
-    # Pre-approved applications to strictly avoid arbitrary execution
-    APPROVED_APPS = {
-        "notepad": "notepad.exe",
-        "calculator": "calc.exe",
-        "paint": "mspaint.exe",
-        "explorer": "explorer.exe"
-    }
-
-    # Steam Game AppIDs for URI routing
-    STEAM_GAMES = {
-        "dota 2": "570",
-        "cs2": "730",
-        "monster hunter": "582010",
-        "cyberpunk 2077": "1091500",
-        "elden ring": "1245620",
-    }
+    def __init__(self):
+        self.settings = SettingsManager()
 
     @staticmethod
     def _resolve_safe_path(relative_path: str) -> Path:
@@ -76,24 +63,41 @@ class SanitizationSandbox:
         except Exception as e:
             return f"Failed to count files: {e}"
 
-    def launch_approved_application(self, target_name: str) -> str:
+    def launch_approved_application(self, target_name: str, arguments: str = "") -> str:
         try:
             name_lower = target_name.lower().strip()
             
-            # 1. Check native Windows apps
-            if name_lower in self.APPROVED_APPS:
-                exe = self.APPROVED_APPS[name_lower]
-                # No shell=True. Exact mapping lookup array.
-                subprocess.Popen([exe], shell=False)
-                return f"Successfully launched local app: {name_lower}"
-
-            # 2. Check Steam games
-            if name_lower in self.STEAM_GAMES:
-                app_id = self.STEAM_GAMES[name_lower]
-                uri = f"steam://run/{app_id}"
-                # Sidestep execution risk by delegating strictly to URI handler
-                webbrowser.open(uri)
-                return f"Successfully routed launch request for Steam game: {name_lower}"
+            # 1. Check native Windows apps and deck shortcuts
+            approved = self.settings.get_approved_apps()
+            deck_shortcuts = self.settings.get_deck_shortcuts()
+            
+            # Native apps
+            if name_lower in approved:
+                exe = approved[name_lower]
+                # If it's a known Steam app id from deck shortcuts, route it properly
+                # Let's check if the target_name exists in deck shortcuts as a steam type
+                is_steam = False
+                app_id = exe
+                for s in deck_shortcuts:
+                    if s["id"].lower() == name_lower and s["type"] == "steam":
+                        is_steam = True
+                        app_id = s["target"]
+                        break
+                        
+                if is_steam:
+                    uri = f"steam://run/{app_id}"
+                    webbrowser.open(uri)
+                    return f"Successfully routed launch request for Steam game: {name_lower}"
+                elif exe.startswith("http://") or exe.startswith("https://"):
+                    webbrowser.open(exe)
+                    return f"Successfully opened web link: {name_lower}"
+                else:
+                    args = shlex.split(exe, posix=False)
+                    if arguments:
+                        # Append any provided arguments, like a URL for a browser
+                        args.extend(shlex.split(arguments, posix=False))
+                    subprocess.Popen(args, shell=False)
+                    return f"Successfully launched local app: {name_lower} with args: {arguments}"
 
             return f"Rejected: '{target_name}' is not in the approved application whitelist."
         except Exception as e:
@@ -134,11 +138,18 @@ class OpenRouterAgent:
             "type": "function",
             "function": {
                 "name": "launch_approved_application",
-                "description": "Launches a locally whitelisted application wrapper or a native Steam game via target URI routing.",
+                "description": "Launch a pre-approved local application or web URL. You can open any app or URL that the user specifies if it is conceptually matched.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "target_name": {"type": "string", "description": "The common name of the application or game, e.g., 'notepad', 'monster hunter'"}
+                        "target_name": {
+                            "type": "string", 
+                            "description": "The name of the app or website (e.g. 'discord', 'youtube', 'firefox')."
+                        },
+                        "arguments": {
+                            "type": "string",
+                            "description": "Optional arguments to pass to the application. For example, if asked to open YouTube on Firefox, target_name='firefox' and arguments='https://youtube.com'."
+                        }
                     },
                     "required": ["target_name"]
                 }
@@ -162,7 +173,7 @@ class OpenRouterAgent:
         payload = {
             "model": OPENROUTER_MODEL,
             "messages": [
-                {"role": "system", "content": "You are a secure Windows automation assistant. Map the user's natural language intent directly to one of the available tool functions. Do not hallucinate tools or arguments."},
+                {"role": "system", "content": "You are a secure Windows automation assistant. You have access to local apps and web URLs. Map the user's natural language intent directly to one of the available tool functions. You can open websites directly (target_name='youtube') or open websites within specific browsers by passing the URL as an argument (target_name='firefox', arguments='https://youtube.com'). Do not hallucinate tools or arguments."},
                 {"role": "user", "content": prompt}
             ],
             "tools": self.TOOLS_SCHEMA,
@@ -207,7 +218,7 @@ class OpenRouterAgent:
                                 res = self.sandbox.count_directory_files(args.get("relative_path", ""))
                                 results.append(res)
                             elif name == "launch_approved_application":
-                                res = self.sandbox.launch_approved_application(args.get("target_name", ""))
+                                res = self.sandbox.launch_approved_application(args.get("target_name", ""), args.get("arguments", ""))
                                 results.append(res)
                             else:
                                 results.append(f"Security Alert: Model attempted to call unauthorized tool '{name}'")

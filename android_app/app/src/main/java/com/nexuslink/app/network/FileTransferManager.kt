@@ -145,6 +145,7 @@ class FileTransferManager @Inject constructor(
                     .setContentText(state.fileName)
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setAutoCancel(true)
+                    .setOngoing(false)
                     .setProgress(0, 0, false)
                     .build()
                 notificationManager.notify(state.notificationId, notification)
