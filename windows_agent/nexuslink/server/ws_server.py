@@ -19,6 +19,7 @@ from nexuslink.server import clipboard_handler
 from nexuslink.server import file_handler
 from nexuslink.server import dropzone_watcher
 from nexuslink.server import agent_orchestrator
+from nexuslink.server import power_handler
 
 log = logging.getLogger("nexuslink.ws_server")
 
@@ -26,6 +27,7 @@ ping_handler.register(registry)
 clipboard_handler.register(registry)
 file_handler.register(registry)
 agent_orchestrator.register(registry)
+power_handler.register(registry)
 
 
 class NexusLinkServer:

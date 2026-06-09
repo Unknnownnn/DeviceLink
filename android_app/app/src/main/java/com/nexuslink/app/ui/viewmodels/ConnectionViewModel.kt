@@ -91,6 +91,18 @@ class ConnectionViewModel @Inject constructor(
         viewModelScope.launch { connectionManager.emitToast("Sending AI command...") }
     }
 
+    fun sendPowerCommand(action: String) {
+        val payload = org.json.JSONObject().apply { put("action", action) }
+        connectionManager.sendMessage("power_command", payload)
+        viewModelScope.launch { connectionManager.emitToast("Sending $action command...") }
+    }
+
+    fun launchApp(appName: String) {
+        val payload = org.json.JSONObject().apply { put("app_name", appName) }
+        connectionManager.sendMessage("launch_app", payload)
+        viewModelScope.launch { connectionManager.emitToast("Launching $appName...") }
+    }
+
     fun sendFile(uri: Uri) {
         fileTransferManager.sendFile(uri)
         viewModelScope.launch { connectionManager.emitToast("Sending file to PC...") }
