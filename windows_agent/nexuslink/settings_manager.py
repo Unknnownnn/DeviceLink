@@ -19,6 +19,8 @@ class SettingsManager:
     def _init(self):
         self.settings_file = DEVICELINK_DIR / "settings.json"
         self.default_settings = {
+            "openrouter_api_key": "",
+            "openrouter_model": "google/gemini-2.5-flash",
             "approved_apps": {
                 "notepad": "notepad.exe",
                 "calculator": "calc.exe",
@@ -108,3 +110,14 @@ class SettingsManager:
                 self.save()
                 return True
         return False
+
+    def get_openrouter_api_key(self) -> str:
+        return self.settings.get("openrouter_api_key", "")
+
+    def get_openrouter_model(self) -> str:
+        return self.settings.get("openrouter_model", "google/gemini-2.5-flash")
+
+    def update_openrouter_settings(self, api_key: str, model: str) -> None:
+        self.settings["openrouter_api_key"] = api_key.strip()
+        self.settings["openrouter_model"] = model.strip()
+        self.save()

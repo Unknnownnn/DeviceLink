@@ -105,6 +105,19 @@ class DeviceLinkApp(ctk.CTk):
         self.tab_status = self.tabview.add("Status")
         self.tab_rules = self.tabview.add("AI Apps & Shortcuts")
 
+        # Settings Gear Button (placed top-right relative to main window)
+        self.settings_btn = ctk.CTkButton(
+            self, 
+            text="⚙ Settings", 
+            width=90, 
+            height=28,
+            fg_color="#1E293B",
+            hover_color="#334155",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.open_settings_window
+        )
+        self.settings_btn.place(relx=0.98, rely=0.03, anchor="ne")
+
         self._build_status_tab()
         self._build_rules_tab()
 
@@ -189,24 +202,6 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.show_logs_btn.pack(side="left")
 
-        # Settings & Preferences Section
-        options_frame = ctk.CTkFrame(self.tab_status)
-        options_frame.pack(fill="x", padx=10, pady=20)
-        
-        ctk.CTkLabel(
-            options_frame, 
-            text="Preferences", 
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(anchor="w", padx=15, pady=(15, 5))
-        
-        self.startup_var = ctk.BooleanVar(value=self.is_run_on_startup_enabled())
-        self.startup_switch = ctk.CTkSwitch(
-            options_frame, 
-            text="Launch DeviceLink automatically on system startup", 
-            variable=self.startup_var,
-            command=self.toggle_startup
-        )
-        self.startup_switch.pack(anchor="w", padx=15, pady=(5, 15))
 
     def show_qr_code(self):
         from config import DEVICELINK_DIR
@@ -831,7 +826,12 @@ class DeviceLinkApp(ctk.CTk):
         import winreg
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "DeviceLink"
-        enabled = self.startup_var.get()
+        
+        # Check active settings variable first, falling back to current state
+        if hasattr(self, "settings_startup_var"):
+            enabled = self.settings_startup_var.get()
+        else:
+            enabled = self.is_run_on_startup_enabled()
         
         if getattr(sys, 'frozen', False):
             exe_path = f'"{sys.executable}"'
@@ -853,6 +853,117 @@ class DeviceLinkApp(ctk.CTk):
             winreg.CloseKey(key)
         except Exception as e:
             print(f"[Console] Failed to update startup configuration: {e}")
+
+    def open_settings_window(self):
+        # Prevent opening duplicate settings window
+        if hasattr(self, "settings_win") and self.settings_win and self.settings_win.winfo_exists():
+            self.settings_win.lift()
+            self.settings_win.focus()
+            return
+            
+        self.settings_win = ctk.CTkToplevel(self)
+        self.settings_win.title("Preferences & API Settings")
+        self.settings_win.geometry("500x380")
+        self.settings_win.resizable(False, False)
+        
+        # Force transient and topmost so it sits nicely in front of main dashboard
+        self.settings_win.transient(self)
+        self.settings_win.attributes("-topmost", True)
+        
+        # Header
+        ctk.CTkLabel(
+            self.settings_win, 
+            text="Preferences & API Config", 
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(anchor="w", padx=20, pady=(20, 10))
+        
+        # Form Container
+        form_frame = ctk.CTkFrame(self.settings_win)
+        form_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        
+        # OpenRouter API Key
+        ctk.CTkLabel(
+            form_frame, 
+            text="OpenRouter API Key:", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(15, 2))
+        
+        self.api_key_entry = ctk.CTkEntry(
+            form_frame, 
+            width=430, 
+            placeholder_text="sk-or-v1-...",
+            show="*"
+        )
+        # Check settings manager
+        current_key = self.settings.get_openrouter_api_key()
+        self.api_key_entry.insert(0, current_key)
+        self.api_key_entry.pack(anchor="w", padx=15, pady=(0, 10))
+        
+        # OpenRouter Model Name
+        ctk.CTkLabel(
+            form_frame, 
+            text="OpenRouter Model Name:", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(0, 2))
+        
+        self.model_entry = ctk.CTkEntry(
+            form_frame, 
+            width=430, 
+            placeholder_text="google/gemini-2.5-flash"
+        )
+        current_model = self.settings.get_openrouter_model()
+        self.model_entry.insert(0, current_model)
+        self.model_entry.pack(anchor="w", padx=15, pady=(0, 15))
+        
+        # Divider
+        divider = ctk.CTkFrame(form_frame, height=2, fg_color="#2D3748")
+        divider.pack(fill="x", padx=15, pady=10)
+        
+        # System Preferences
+        ctk.CTkLabel(
+            form_frame, 
+            text="System Preferences:", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(0, 5))
+        
+        self.settings_startup_var = ctk.BooleanVar(value=self.is_run_on_startup_enabled())
+        self.settings_startup_switch = ctk.CTkSwitch(
+            form_frame, 
+            text="Launch DeviceLink automatically on system startup", 
+            variable=self.settings_startup_var,
+            command=self.toggle_startup
+        )
+        self.settings_startup_switch.pack(anchor="w", padx=15, pady=(5, 15))
+        
+        # Buttons Row
+        btn_row = ctk.CTkFrame(self.settings_win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 15))
+        
+        cancel_btn = ctk.CTkButton(
+            btn_row, 
+            text="Cancel", 
+            width=80, 
+            fg_color="gray", 
+            hover_color="#555555", 
+            command=self.settings_win.destroy
+        )
+        cancel_btn.pack(side="right", padx=(5, 0))
+        
+        save_btn = ctk.CTkButton(
+            btn_row, 
+            text="Save Settings", 
+            width=120, 
+            command=self.save_settings_preferences
+        )
+        save_btn.pack(side="right")
+        
+    def save_settings_preferences(self):
+        new_key = self.api_key_entry.get().strip()
+        new_model = self.model_entry.get().strip()
+        
+        self.settings.update_openrouter_settings(new_key, new_model)
+        print("[Console] Settings saved successfully.")
+        self.settings_win.destroy()
 
 
 if __name__ == "__main__":

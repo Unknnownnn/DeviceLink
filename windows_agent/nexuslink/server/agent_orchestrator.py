@@ -181,16 +181,28 @@ class OpenRouterAgent:
         self.sandbox = SanitizationSandbox()
 
     async def execute_command(self, prompt: str) -> str:
-        if not self.api_key:
-            return "Server Error: OPENROUTER_API_KEY is not configured on the Windows agent."
+        # Load settings dynamically to support runtime config updates
+        settings = SettingsManager()
+        api_key = settings.get_openrouter_api_key()
+        if not api_key:
+            from config import OPENROUTER_API_KEY
+            api_key = OPENROUTER_API_KEY
+            
+        model = settings.get_openrouter_model()
+        if not model:
+            from config import OPENROUTER_MODEL
+            model = OPENROUTER_MODEL
+
+        if not api_key:
+            return "Server Error: OPENROUTER_API_KEY is not configured on the Windows agent. Please configure it in the agent dashboard Settings."
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
         payload = {
-            "model": OPENROUTER_MODEL,
+            "model": model,
             "messages": [
                 {"role": "system", "content": "You are a secure Windows automation assistant. You have access to local apps and web URLs. Map the user's natural language intent directly to one of the available tool functions. You can open websites directly (target_name='youtube') or open websites within specific browsers by passing the URL as an argument (target_name='firefox', arguments='https://youtube.com'). Do not hallucinate tools or arguments."},
                 {"role": "user", "content": prompt}
