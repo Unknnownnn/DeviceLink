@@ -5,12 +5,19 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.animateColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector2D
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.animation.core.animateDp
 import androidx.compose.ui.composed
 import androidx.compose.ui.layout.approachLayout
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -38,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -134,177 +142,214 @@ fun ConnectionScreen(
                         )
                     }
                     is ConnectionState.Connected -> {
-                        var sectionsState by remember { mutableStateOf(listOf("AI", "Apps", "Power", "Logs")) }
-                        var activeSection by remember { mutableStateOf(sectionsState.first()) }
-                        
-                        LookaheadScope {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(vertical = 16.dp)
-                            ) {
-                                val activeSec = sectionsState.first { it == activeSection }
-                                val inactiveSecs = sectionsState.filter { it != activeSection }
-                                
-                                val secColor: (String) -> Color = {
-                                    when(it) {
-                                        "AI" -> Rose400
-                                        "Apps" -> Blue400
-                                        "Power" -> Emerald400
-                                        else -> Cyan400
-                                    }
-                                }
+                        val sections = remember { listOf("AI", "Apps", "Power", "Logs") }
+                        var activeSection by remember { mutableStateOf("AI") }
+                        var expandedSection by remember { mutableStateOf("AI") }
 
-                                // TOP EXPANDED CARD
-                                ExpandableGridItem(
-                                    title = activeSec,
-                                    color = secColor(activeSec),
-                                    expanded = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(0.6f)
-                                        .animateBounds(lookaheadScope = this@LookaheadScope),
-                                    onClick = { }
-                                ) {
-                                    when (activeSec) {
-                                        "AI" -> {
-                                            OutlinedTextField(
-                                                value = nlpPrompt,
-                                                onValueChange = { nlpPrompt = it },
-                                                label = { Text("Command") },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                colors = OutlinedTextFieldDefaults.colors(
-                                                    focusedBorderColor = Rose400,
-                                                    unfocusedBorderColor = Surface600,
-                                                    focusedTextColor = Color.White,
-                                                    unfocusedTextColor = Color.White
-                                                )
+                        LaunchedEffect(activeSection) {
+                            if (activeSection != expandedSection) {
+                                expandedSection = ""
+                                kotlinx.coroutines.delay(200) // Perfect delay for collapse pass before expansion
+                                expandedSection = activeSection
+                            }
+                        }
+                        
+                        val isExpanded = activeSection == expandedSection
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(vertical = 16.dp)
+                        ) {
+                            val secColor: (String) -> Color = {
+                                when(it) {
+                                    "AI" -> Rose400
+                                    "Apps" -> Blue400
+                                    "Power" -> Emerald400
+                                    else -> Cyan400
+                                }
+                            }
+
+                             // TOP CARD (Active tab, animated)
+                            ExpandableGridItem(
+                                title = activeSection,
+                                color = secColor(activeSection),
+                                expanded = isExpanded,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .animateContentSize(
+                                        animationSpec = tween(
+                                            durationMillis = 400,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                                    .height(if (isExpanded) 420.dp else 64.dp),
+                                onClick = { }
+                            ) {
+                                when (activeSection) {
+                                    "AI" -> {
+                                        OutlinedTextField(
+                                            value = nlpPrompt,
+                                            onValueChange = { nlpPrompt = it },
+                                            label = { Text("Command") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = Rose400,
+                                                unfocusedBorderColor = Surface600,
+                                                focusedTextColor = Color.White,
+                                                unfocusedTextColor = Color.White
                                             )
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Button(
-                                                onClick = { 
-                                                    if (nlpPrompt.isNotBlank()) {
-                                                        viewModel.sendNlpCommand(nlpPrompt)
-                                                        nlpPrompt = ""
-                                                    }
-                                                },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Rose500)
-                                            ) {
-                                                Text("Execute")
-                                            }
-                                        }
-                                        "Apps" -> {
-                                            val shortcuts = viewModel.deckShortcuts.collectAsState().value
-                                            if (shortcuts.isNotEmpty()) {
-                                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                                    val chunks = shortcuts.chunked(3)
-                                                    for (chunk in chunks) {
-                                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                                            for (shortcut in chunk) {
-                                                                val label = shortcut.optString("label", "App")
-                                                                val id = shortcut.optString("id", "")
-                                                                val type = shortcut.optString("type", "app")
-                                                                val icon = if (type == "steam") Icons.Default.PlayArrow else Icons.Default.Apps
-                                                                DeckButton(label, icon, Blue500) { viewModel.launchApp(id) }
-                                                            }
-                                                            repeat(3 - chunk.size) {
-                                                                Spacer(modifier = Modifier.size(72.dp))
-                                                            }
-                                                        }
-                                                        Spacer(modifier = Modifier.height(16.dp))
-                                                    }
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Button(
+                                            onClick = { 
+                                                if (nlpPrompt.isNotBlank()) {
+                                                    viewModel.sendNlpCommand(nlpPrompt)
+                                                    nlpPrompt = ""
                                                 }
-                                            } else {
-                                                Text("No apps", color = OnSurfaceDim, style = MaterialTheme.typography.bodySmall)
-                                            }
-                                        }
-                                        "Power" -> {
-                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                                DeckButton("Lock", Icons.Default.Lock, Emerald500) { viewModel.sendPowerCommand("lock") }
-                                                DeckButton("Sleep", Icons.Default.NightsStay, Emerald500) { viewModel.sendPowerCommand("sleep") }
-                                                DeckButton("Shutdown", Icons.Default.PowerSettingsNew, Rose500) { viewModel.sendPowerCommand("shutdown") }
-                                            }
-                                        }
-                                        "Logs" -> {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                StatusBanner(
-                                                    icon = Icons.Default.CheckCircle,
-                                                    iconTint = Emerald400,
-                                                    title = "Secure Channel Active",
-                                                    subtitle = "ChaCha20-Poly1305",
-                                                    containerColor = Emerald400.copy(alpha = 0.1f),
-                                                    borderColor = Emerald400.copy(alpha = 0.3f)
-                                                )
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                                Text("E2E Test", style = MaterialTheme.typography.titleSmall, color = Cyan200)
-                                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                                    Metric(label = "Pings", value = uiState.pingCount.toString())
-                                                    Metric(label = "Pongs", value = uiState.pongCount.toString())
-                                                }
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                                Button(
-                                                    onClick = { viewModel.sendPing() },
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Cyan500)
-                                                ) {
-                                                    Text("Ping")
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                Spacer(Modifier.height(16.dp))
-                                
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(0.3f),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    inactiveSecs.forEach { sec ->
-                                        ExpandableGridItem(
-                                            title = sec,
-                                            color = secColor(sec),
-                                            expanded = false,
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxHeight()
-                                                .animateBounds(lookaheadScope = this@LookaheadScope),
-                                            onClick = {
-                                                val previousTop = sectionsState.first { it == activeSection }
-                                                val clickedIndex = sectionsState.indexOfFirst { it == sec }
-                                                val oldTopIndex = sectionsState.indexOfFirst { it == previousTop }
-                                                
-                                                val mutable = sectionsState.toMutableList()
-                                                mutable[oldTopIndex] = sec
-                                                mutable[clickedIndex] = previousTop
-                                                sectionsState = mutable
-                                                
-                                                activeSection = sec
-                                            }
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Rose500)
                                         ) {
+                                            Text("Execute")
+                                        }
+                                    }
+                                    "Apps" -> {
+                                        val shortcuts = viewModel.deckShortcuts.collectAsState().value
+                                        if (shortcuts.isNotEmpty()) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                                val chunks = shortcuts.chunked(3)
+                                                for (chunk in chunks) {
+                                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                                        for (shortcut in chunk) {
+                                                            val label = shortcut.optString("label", "App")
+                                                            val id = shortcut.optString("id", "")
+                                                            val type = shortcut.optString("type", "app")
+                                                            val icon = if (type == "steam") Icons.Default.PlayArrow else Icons.Default.Apps
+                                                            DeckButton(label, icon, Blue500) { viewModel.launchApp(id) }
+                                                        }
+                                                        repeat(3 - chunk.size) {
+                                                            Spacer(modifier = Modifier.size(72.dp))
+                                                        }
+                                                    }
+                                                    Spacer(modifier = Modifier.height(16.dp))
+                                                }
+                                            }
+                                        } else {
+                                            Text("No apps", color = OnSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                    "Power" -> {
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                            DeckButton("Lock", Icons.Default.Lock, Emerald500) { viewModel.sendPowerCommand("lock") }
+                                            DeckButton("Sleep", Icons.Default.NightsStay, Emerald500) { viewModel.sendPowerCommand("sleep") }
+                                            DeckButton("Shutdown", Icons.Default.PowerSettingsNew, Rose500) { viewModel.sendPowerCommand("shutdown") }
+                                        }
+                                    }
+                                    "Logs" -> {
+                                        Column(
+                                            horizontalAlignment = Alignment.Start,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = "Secure Channel Active (ChaCha20-Poly1305)",
+                                                color = Emerald400,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            
+                                            // Console-style Log Container
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(180.dp)
+                                                    .background(Surface900, RoundedCornerShape(8.dp))
+                                                    .border(1.dp, Surface600, RoundedCornerShape(8.dp))
+                                                    .padding(12.dp)
+                                            ) {
+                                                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                                     Text(
+                                                         text = "> PINGS SENT: ${uiState.pingCount}\n> PONGS RECEIVED: ${uiState.pongCount}",
+                                                         color = Cyan300,
+                                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                         style = MaterialTheme.typography.bodySmall
+                                                     )
+                                                     if (uiState.lastPongPayload.isNotEmpty()) {
+                                                         Spacer(modifier = Modifier.height(8.dp))
+                                                         Text(
+                                                             text = "LAST RECEIVED PONG:\n${uiState.lastPongPayload}",
+                                                             color = Emerald400,
+                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                             style = MaterialTheme.typography.bodySmall
+                                                         )
+                                                     } else {
+                                                         Spacer(modifier = Modifier.height(8.dp))
+                                                         Text(
+                                                             text = "No E2E loop transactions yet. Send PING to begin.",
+                                                             color = OnSurfaceDim,
+                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                             style = MaterialTheme.typography.bodySmall
+                                                         )
+                                                     }
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            Button(
+                                                onClick = { viewModel.sendPing() },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Cyan500)
+                                            ) {
+                                                Text("Send Ping Request")
+                                            }
                                         }
                                     }
                                 }
+                            }
+
+                            // SPACER THAT DYNAMICALLY EXPANDS TO FILL SPACE WHEN COLLAPSED
+                            Spacer(
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            // FIXED BOTTOM ROW
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(64.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                val inactiveSecs = sections.filter { it != activeSection }
+                                inactiveSecs.forEach { sec ->
+                                    ExpandableGridItem(
+                                        title = sec,
+                                        color = secColor(sec),
+                                        expanded = false,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight(),
+                                        onClick = {
+                                            activeSection = sec
+                                        }
+                                    ) {
+                                    }
+                                }
+                            }
                                 
-                                Spacer(modifier = Modifier.height(24.dp))
-                                Button(
-                                    onClick = { viewModel.pushClipboardToPc() },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Blue500, contentColor = Color.White)
-                                ) {
-                                    Text("Push Phone Clipboard to PC")
-                                }
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Button(
-                                    onClick = { filePickerLauncher.launch("*/*") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Blue400, contentColor = Color.White)
-                                ) {
-                                    Text("Send File to PC")
-                                }
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(
+                                onClick = { viewModel.pushClipboardToPc() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Blue500, contentColor = Color.White)
+                            ) {
+                                Text("Push Phone Clipboard to PC")
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { filePickerLauncher.launch("*/*") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Blue400, contentColor = Color.White)
+                            ) {
+                                Text("Send File to PC")
                             }
                         }
                     }
@@ -413,79 +458,113 @@ fun ExpandableGridItem(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
+    val transition = updateTransition(targetState = expanded, label = "expand_grid_item")
+    
+    val topPadding by transition.animateDp(
+        label = "top_padding",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) 16.dp else 8.dp
+    }
+    
+    val bottomPadding by transition.animateDp(
+        label = "bottom_padding",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) 16.dp else 8.dp
+    }
+
+    val horizontalPadding by transition.animateDp(
+        label = "horizontal_padding",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) 16.dp else 8.dp
+    }
+
+    val topSpacerHeight by transition.animateDp(
+        label = "top_spacer",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) 0.dp else 6.dp
+    }
+
+    val backgroundColor by transition.animateColor(
+        label = "background_color",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) Surface800 else color
+    }
+
+    val contentColor by transition.animateColor(
+        label = "content_color",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) color else Surface900
+    }
+
+    val borderColor by transition.animateColor(
+        label = "border_color",
+        transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
+    ) { state ->
+        if (state) color else color
+    }
+
     Box(
         modifier = modifier
-            .background(color.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
-            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+            .background(backgroundColor, RoundedCornerShape(16.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
-            .padding(16.dp)
+            .padding(
+                start = horizontalPadding,
+                end = horizontalPadding,
+                top = topPadding,
+                bottom = bottomPadding
+            ),
+        contentAlignment = Alignment.TopCenter
     ) {
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally, 
-            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (expanded) Modifier.verticalScroll(rememberScrollState()) else Modifier
+                )
         ) {
-            Text(title, color = color, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (expanded) {
-                Spacer(modifier = Modifier.height(16.dp))
-                content()
+            Spacer(modifier = Modifier.height(topSpacerHeight))
+            Text(
+                title,
+                color = contentColor,
+                style = if (expanded) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            transition.AnimatedVisibility(
+                visible = { it },
+                enter = fadeIn(
+                    animationSpec = tween(
+                        durationMillis = 300,
+                        delayMillis = 100,
+                        easing = FastOutSlowInEasing
+                    )
+                ),
+                exit = fadeOut(
+                    animationSpec = tween(
+                        durationMillis = 150,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    content()
+                }
             }
         }
     }
 }
 
-fun Modifier.animateBounds(
-    lookaheadScope: LookaheadScope
-): Modifier = this.composed {
-    var sizeAnim by remember { mutableStateOf<Animatable<androidx.compose.ui.unit.IntSize, AnimationVector2D>?>(null) }
-    var offsetAnim by remember { mutableStateOf<Animatable<androidx.compose.ui.unit.IntOffset, AnimationVector2D>?>(null) }
-    val coroutineScope = rememberCoroutineScope()
-    
-    with(lookaheadScope) {
-        this@composed.approachLayout(
-            isMeasurementApproachInProgress = { lookaheadSize ->
-                lookaheadSize != sizeAnim?.targetValue
-            },
-            isPlacementApproachInProgress = { lookaheadCoordinates ->
-                val target = lookaheadScopeCoordinates.localLookaheadPositionOf(lookaheadCoordinates).let { 
-                    androidx.compose.ui.unit.IntOffset(it.x.toInt(), it.y.toInt()) 
-                }
-                target != offsetAnim?.targetValue
-            }
-        ) { measurable, constraints ->
-            val placeable = measurable.measure(constraints)
-            
-            val targetSize = androidx.compose.ui.unit.IntSize(lookaheadSize.width, lookaheadSize.height)
-            val currentSizeAnim = sizeAnim ?: Animatable(targetSize, androidx.compose.ui.unit.IntSize.VectorConverter).also { sizeAnim = it }
-            if (targetSize != currentSizeAnim.targetValue) {
-                coroutineScope.launch { currentSizeAnim.animateTo(targetSize, tween(250, easing = FastOutSlowInEasing)) }
-            }
-            
-            val size = currentSizeAnim.value
-            
-            layout(size.width, size.height) {
-                val coords = coordinates
-                if (coords != null) {
-                    val targetOffset = lookaheadScopeCoordinates.localLookaheadPositionOf(coords).let { 
-                        androidx.compose.ui.unit.IntOffset(it.x.toInt(), it.y.toInt()) 
-                    }
-                    val currentOffsetAnim = offsetAnim ?: Animatable(targetOffset, androidx.compose.ui.unit.IntOffset.VectorConverter).also { offsetAnim = it }
-                    if (targetOffset != currentOffsetAnim.targetValue) {
-                        coroutineScope.launch { currentOffsetAnim.animateTo(targetOffset, tween(250, easing = FastOutSlowInEasing)) }
-                    }
-                    
-                    val currentOffset = lookaheadScopeCoordinates.localPositionOf(coords, androidx.compose.ui.geometry.Offset.Zero).let { 
-                        androidx.compose.ui.unit.IntOffset(it.x.toInt(), it.y.toInt()) 
-                    }
-                    val offset = currentOffsetAnim.value - currentOffset
-                    placeable.place(offset.x, offset.y)
-                } else {
-                    placeable.place(0, 0)
-                }
-            }
-        }
-    }
-}
+

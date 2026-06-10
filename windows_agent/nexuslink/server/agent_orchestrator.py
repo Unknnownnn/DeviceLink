@@ -66,42 +66,61 @@ class SanitizationSandbox:
     def launch_approved_application(self, target_name: str, arguments: str = "") -> str:
         try:
             name_lower = target_name.lower().strip()
-            
-            # 1. Check native Windows apps and deck shortcuts
             approved = self.settings.get_approved_apps()
-            deck_shortcuts = self.settings.get_deck_shortcuts()
             
-            # Native apps
-            if name_lower in approved:
-                exe = approved[name_lower]
-                # If it's a known Steam app id from deck shortcuts, route it properly
-                # Let's check if the target_name exists in deck shortcuts as a steam type
-                is_steam = False
-                app_id = exe
-                for s in deck_shortcuts:
-                    if s["id"].lower() == name_lower and s["type"] == "steam":
-                        is_steam = True
-                        app_id = s["target"]
-                        break
-                        
-                if is_steam:
-                    uri = f"steam://run/{app_id}"
-                    webbrowser.open(uri)
-                    return f"Successfully routed launch request for Steam game: {name_lower}"
-                elif exe.startswith("http://") or exe.startswith("https://"):
-                    webbrowser.open(exe)
-                    return f"Successfully opened web link: {name_lower}"
-                else:
-                    args = shlex.split(exe, posix=False)
-                    if arguments:
-                        # Append any provided arguments, like a URL for a browser
-                        args.extend(shlex.split(arguments, posix=False))
-                    subprocess.Popen(args, shell=False)
-                    return f"Successfully launched local app: {name_lower} with args: {arguments}"
-
-            return f"Rejected: '{target_name}' is not in the approved application whitelist."
+            if name_lower not in approved:
+                return f"Rejected: '{target_name}' is not in the approved application whitelist."
+                
+            exe = approved[name_lower]
+            # Treat numeric strings as Steam App IDs automatically
+            is_steam = exe.isdigit()
+            
+            if is_steam:
+                uri = f"steam://run/{exe}"
+                webbrowser.open(uri)
+                return f"Successfully routed launch request for Steam game: {name_lower}"
+            elif exe.startswith("http://") or exe.startswith("https://"):
+                webbrowser.open(exe)
+                return f"Successfully opened web link: {name_lower}"
+            else:
+                args = shlex.split(exe, posix=False)
+                if arguments:
+                    args.extend(shlex.split(arguments, posix=False))
+                subprocess.Popen(args, shell=False)
+                return f"Successfully launched local app: {name_lower} with args: {arguments}"
         except Exception as e:
             return f"Failed to launch application: {e}"
+
+    def launch_shortcut_application(self, shortcut_id: str) -> str:
+        try:
+            id_lower = shortcut_id.lower().strip()
+            deck_shortcuts = self.settings.get_deck_shortcuts()
+            
+            shortcut = None
+            for s in deck_shortcuts:
+                if s["id"].lower() == id_lower:
+                    shortcut = s
+                    break
+            
+            if not shortcut:
+                return f"Rejected: Mobile shortcut '{shortcut_id}' is not configured."
+
+            exe = shortcut["target"]
+            is_steam = shortcut["type"] == "steam"
+            
+            if is_steam:
+                uri = f"steam://run/{exe}"
+                webbrowser.open(uri)
+                return f"Successfully routed shortcut launch request for Steam game: {shortcut_id}"
+            elif exe.startswith("http://") or exe.startswith("https://"):
+                webbrowser.open(exe)
+                return f"Successfully opened shortcut web link: {shortcut_id}"
+            else:
+                args = shlex.split(exe, posix=False)
+                subprocess.Popen(args, shell=False)
+                return f"Successfully launched shortcut local app: {shortcut_id}"
+        except Exception as e:
+            return f"Failed to launch shortcut application: {e}"
 
 
 class OpenRouterAgent:

@@ -29,6 +29,11 @@ file_handler.register(registry)
 agent_orchestrator.register(registry)
 power_handler.register(registry)
 
+active_peers = set()
+
+def get_active_peers():
+    return list(active_peers)
+
 
 class NexusLinkServer:
     """
@@ -90,6 +95,9 @@ class NexusLinkServer:
             log.info("Secure session established with %s", websocket.remote_address)
             print(f"[Server] ✓ Secure session with {websocket.remote_address}")
 
+            # Register connection
+            active_peers.add(peer)
+
             # Send dynamic deck shortcuts
             from nexuslink.settings_manager import SettingsManager
             settings = SettingsManager()
@@ -108,6 +116,7 @@ class NexusLinkServer:
         except Exception as exc:
             log.exception("Unexpected error handling %s: %s", peer, exc)
         finally:
+            active_peers.discard(peer)
             log.info("Peer disconnected: %s", peer)
             print(f"[Server] ✗ Peer disconnected: {peer}")
 

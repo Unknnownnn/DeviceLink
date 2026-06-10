@@ -19,6 +19,9 @@ windows_agent/env/
 windows_agent/.env
 windows_agent/*.png
 windows_agent/*.key
+windows_agent/build/
+windows_agent/dist/
+windows_agent/*.spec
 
 # General OS Files
 .DS_Store

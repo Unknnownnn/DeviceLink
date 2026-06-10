@@ -54,11 +54,8 @@ class SettingsManager:
             json.dump(self.settings, f, indent=4)
 
     def get_approved_apps(self):
-        # Return both standard apps and steam games combined for the AI to launch
-        apps = self.settings.get("approved_apps", {}).copy()
-        for shortcut in self.settings.get("deck_shortcuts", []):
-            apps[shortcut["id"].lower()] = shortcut["target"]
-        return apps
+        # Return standard apps ONLY (segregated from mobile shortcuts)
+        return self.settings.get("approved_apps", {}).copy()
     
     def get_deck_shortcuts(self):
         return self.settings.get("deck_shortcuts", [])
@@ -87,3 +84,27 @@ class SettingsManager:
             s for s in self.settings["deck_shortcuts"] if s["id"] != shortcut_id
         ]
         self.save()
+
+    def update_app(self, old_name, new_name, new_exe):
+        old_name_lower = old_name.lower()
+        new_name_lower = new_name.lower()
+        if old_name_lower in self.settings["approved_apps"]:
+            if old_name_lower != new_name_lower:
+                del self.settings["approved_apps"][old_name_lower]
+            self.settings["approved_apps"][new_name_lower] = new_exe
+            self.save()
+            return True
+        return False
+
+    def update_shortcut(self, old_id, new_label, new_type, new_target):
+        shortcuts = self.settings.get("deck_shortcuts", [])
+        for s in shortcuts:
+            if s["id"] == old_id:
+                s["label"] = new_label
+                s["type"] = new_type
+                s["target"] = new_target
+                new_id = new_label.lower().replace(" ", "_")
+                s["id"] = new_id
+                self.save()
+                return True
+        return False

@@ -37,7 +37,7 @@ async def handle_launch_app(
     
     # Reuse our existing safe sandbox
     sandbox = SanitizationSandbox()
-    result = sandbox.launch_approved_application(app_name)
+    result = sandbox.launch_shortcut_application(app_name)
     log.info("Launch result: %s", result)
 
 

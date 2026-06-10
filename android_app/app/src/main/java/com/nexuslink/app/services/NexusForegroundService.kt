@@ -160,4 +160,10 @@ class NexusForegroundService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(2, notification)
     }
+
+    override fun onDestroy() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancel(2)
+        super.onDestroy()
+    }
 }
