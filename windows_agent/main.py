@@ -1,14 +1,3 @@
-"""
-DeviceLink Windows Agent — Entry Point
-
-Starts the following concurrent services:
-  1. Zeroconf mDNS publisher (announces '_devicelink._tcp.local.' on LAN)
-  2. QR code display (for one-time device pairing)
-  3. Encrypted WebSocket server (handles peer connections)
-
-Usage:
-    python main.py [--port PORT]
-"""
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +34,7 @@ async def run(port: int) -> None:
     await discovery.start()
     await server.start()
     print(f"[QR] Pairing QR code saved to: {png_path}")
-
     print("\n[DeviceLink] Agent running. Waiting for Android connection…")
-    print("[DeviceLink] Press Ctrl+C to stop.\n")
 
     try:
         await asyncio.Future()
@@ -57,12 +44,11 @@ async def run(port: int) -> None:
         print("\n[DeviceLink] Shutting down…")
         await discovery.stop()
         await server.stop()
-        print("[DeviceLink] Goodbye.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DeviceLink Windows Agent — Phase 1",
+        description="DeviceLink Windows Agent",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

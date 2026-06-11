@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -224,8 +225,16 @@ fun ConnectionScreen(
                                                             val label = shortcut.optString("label", "App")
                                                             val id = shortcut.optString("id", "")
                                                             val type = shortcut.optString("type", "app")
+                                                            val iconB64 = shortcut.optString("icon", "")
                                                             val icon = if (type == "steam") Icons.Default.PlayArrow else Icons.Default.Apps
-                                                            DeckButton(label, icon, Blue500) { viewModel.launchApp(id) }
+                                                            DeckButton(
+                                                                label = label,
+                                                                icon = icon,
+                                                                iconB64 = iconB64,
+                                                                color = Blue500
+                                                            ) {
+                                                                viewModel.launchApp(id)
+                                                            }
                                                         }
                                                         repeat(3 - chunk.size) {
                                                             Spacer(modifier = Modifier.size(72.dp))
@@ -240,9 +249,9 @@ fun ConnectionScreen(
                                     }
                                     "Power" -> {
                                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                            DeckButton("Lock", Icons.Default.Lock, Emerald500) { viewModel.sendPowerCommand("lock") }
-                                            DeckButton("Sleep", Icons.Default.NightsStay, Emerald500) { viewModel.sendPowerCommand("sleep") }
-                                            DeckButton("Shutdown", Icons.Default.PowerSettingsNew, Rose500) { viewModel.sendPowerCommand("shutdown") }
+                                            DeckButton("Lock", Icons.Default.Lock, color = Emerald500) { viewModel.sendPowerCommand("lock") }
+                                            DeckButton("Sleep", Icons.Default.NightsStay, color = Emerald500) { viewModel.sendPowerCommand("sleep") }
+                                            DeckButton("Shutdown", Icons.Default.PowerSettingsNew, color = Rose500) { viewModel.sendPowerCommand("shutdown") }
                                         }
                                     }
                                     "Logs" -> {
@@ -431,18 +440,42 @@ private fun Metric(label: String, value: String) {
 private fun DeckButton(
     label: String, 
     icon: androidx.compose.ui.graphics.vector.ImageVector, 
+    iconB64: String = "",
     color: Color, 
     onClick: () -> Unit
 ) {
+    val imageBitmap = remember(iconB64) {
+        if (iconB64.isNotEmpty()) {
+            try {
+                val decodedBytes = android.util.Base64.decode(iconB64, android.util.Base64.DEFAULT)
+                android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)?.asImageBitmap()
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+    }
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Button(
             onClick = onClick,
             modifier = Modifier.size(72.dp),
             shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = color),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (imageBitmap != null) Surface800 else color
+            ),
             contentPadding = PaddingValues(0.dp)
         ) {
-            Icon(icon, contentDescription = label, modifier = Modifier.size(32.dp))
+            if (imageBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = imageBitmap,
+                    contentDescription = label,
+                    modifier = Modifier.fillMaxSize().padding(14.dp)
+                )
+            } else {
+                Icon(icon, contentDescription = label, modifier = Modifier.size(32.dp))
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = OnSurface)

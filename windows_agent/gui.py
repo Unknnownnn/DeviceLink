@@ -49,7 +49,6 @@ ctk.set_default_color_theme("blue")
 
 
 def create_tray_image():
-    # Load custom icon.png if it exists
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS
     else:
@@ -57,14 +56,34 @@ def create_tray_image():
     custom_icon = os.path.join(base_path, "icon.png")
     if os.path.exists(custom_icon):
         try:
-            return Image.open(custom_icon)
+            img = Image.open(custom_icon).convert("RGBA")
+            
+            bbox = img.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+            w, h = img.size
+            max_dim = max(w, h)
+            margin = int(max_dim * 0.05) 
+            new_size = max_dim + 2 * margin
+            
+            square_img = Image.new("RGBA", (new_size, new_size), (0, 0, 0, 0))
+            square_img.paste(img, ((new_size - w) // 2, (new_size - h) // 2))
+            img = square_img
+            white_img = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            _, _, _, alpha = img.split()
+            white_img.putalpha(alpha)
+            resample_filter = getattr(Image, 'Resampling', None)
+            if resample_filter:
+                resample = resample_filter.LANCZOS
+            else:
+                resample = Image.ANTIALIAS
+            return white_img.resize((64, 64), resample)
         except Exception:
             pass
 
-    # Simple icon for the tray
     image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     dc = ImageDraw.Draw(image)
-    dc.ellipse((8, 8, 56, 56), fill=(0, 200, 255))
+    dc.ellipse((2, 2, 62, 62), fill=(255, 255, 255))
     return image
 
 
@@ -78,7 +97,6 @@ class DeviceLinkApp(ctk.CTk):
         self.settings = SettingsManager()
         self.check_single_instance()
 
-        # Load window icon if it exists
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
         else:
@@ -90,23 +108,19 @@ class DeviceLinkApp(ctk.CTk):
             except Exception:
                 pass
 
-        # Handle window close behavior
-        self.protocol("WM_DELETE_WINDOW", self.hide_window)
+        DeviceLinkApp._instance = self
+        self.call_overlay_window = None
 
-        # Redirect standard output state
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.log_history = []
         self.logs_window = None
         self.log_textbox = None
-
-        # Build UI
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(padx=20, pady=20, fill="both", expand=True)
-
         self.tab_status = self.tabview.add("Status")
         self.tab_rules = self.tabview.add("Mobile Deck Shortcuts")
-        self.tab_agent_test = self.tabview.add("AI Agent Test")
-
-        # Settings Gear Button (placed top-right relative to main window)
+        self.tab_agent_test = self.tabview.add("AI Agent")
+        self.tab_calls = self.tabview.add("Phone Calls")
         self.settings_btn = ctk.CTkButton(
             self, 
             text="⚙ Settings", 
@@ -122,22 +136,14 @@ class DeviceLinkApp(ctk.CTk):
         self._build_status_tab()
         self._build_rules_tab()
         self._build_agent_test_tab()
-
-        # Start queue processing
+        self._build_calls_tab()
         self.check_logs_loop()
-
-        # Start backend
         self.backend_thread = threading.Thread(target=self.start_backend, daemon=True)
         self.backend_thread.start()
-
-        # Tray Setup
         self.setup_tray()
-
-        # Start connection status observer loop
         self.update_connection_status_loop()
 
     def _build_status_tab(self):
-        # Title and info frame
         status_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
         status_frame.pack(fill="x", padx=10, pady=(20, 10))
         
@@ -156,14 +162,13 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.status_info.pack(anchor="w", pady=(2, 10))
 
-        # Connection status badge
         self.conn_status_frame = ctk.CTkFrame(status_frame, fg_color="#1E293B", height=32, corner_radius=6)
         self.conn_status_frame.pack(anchor="w", pady=(0, 20))
         
         self.status_dot = ctk.CTkLabel(
             self.conn_status_frame, 
             text="●", 
-            text_color="#F59E0B", # Orange/yellow for waiting
+            text_color="#F59E0B", 
             font=ctk.CTkFont(size=14)
         )
         self.status_dot.pack(side="left", padx=(12, 6))
@@ -176,7 +181,6 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.status_text.pack(side="left", padx=(0, 12))
 
-        # Button Row
         button_row = ctk.CTkFrame(self.tab_status, fg_color="transparent")
         button_row.pack(fill="x", padx=10, pady=10)
 
@@ -209,23 +213,18 @@ class DeviceLinkApp(ctk.CTk):
         from config import DEVICELINK_DIR
         qr_path = DEVICELINK_DIR / "pairing_qr.png"
         
-        # Create TopLevel window
         qr_window = ctk.CTkToplevel(self)
         qr_window.title("Pairing QR Code")
         qr_window.geometry("340x420")
         qr_window.resizable(False, False)
-        
-        # Ensure it stays on top
         qr_window.attributes("-topmost", True)
-
         if qr_path.exists():
             try:
-                # Load image using PIL
                 pil_img = Image.open(str(qr_path))
                 ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(260, 260))
                 
                 img_label = ctk.CTkLabel(qr_window, image=ctk_img, text="")
-                img_label.image = ctk_img  # Keep reference
+                img_label.image = ctk_img 
                 img_label.pack(pady=20)
                 
                 info_label = ctk.CTkLabel(
@@ -242,7 +241,6 @@ class DeviceLinkApp(ctk.CTk):
             err_label.pack(pady=40)
 
     def show_logs_window(self):
-        # Check if window already exists and is open
         if self.logs_window and self.logs_window.winfo_exists():
             self.logs_window.lift()
             self.logs_window.focus()
@@ -311,8 +309,6 @@ class DeviceLinkApp(ctk.CTk):
         if msgs:
             self.append_logs_to_ui(msgs)
             
-        # Optimize performance: if the main dashboard is hidden and the logs window is closed,
-        # slow down the polling interval (e.g. 2000ms instead of 150ms) to minimize CPU wakeups.
         is_visible = self.winfo_viewable()
         is_logs_open = self.logs_window and self.logs_window.winfo_exists()
         interval = 150 if (is_visible or is_logs_open) else 2000
@@ -621,6 +617,8 @@ class DeviceLinkApp(ctk.CTk):
                 self.settings.update_shortcut(old_id, new_label, new_type, new_target)
                 self.refresh_rules_ui()
                 edit_win.destroy()
+                from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
+                sync_shortcuts_to_active_peers()
 
         # Save / Cancel row
         btn_row = ctk.CTkFrame(edit_win, fg_color="transparent")
@@ -654,10 +652,14 @@ class DeviceLinkApp(ctk.CTk):
             self.sc_name_entry.delete(0, ctk.END)
             self.sc_target_entry.delete(0, ctk.END)
             self.refresh_rules_ui()
+            from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
+            sync_shortcuts_to_active_peers()
 
     def remove_shortcut(self, shortcut_id):
         self.settings.remove_shortcut(shortcut_id)
         self.refresh_rules_ui()
+        from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
+        sync_shortcuts_to_active_peers()
 
     def check_single_instance(self):
         self.lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1003,6 +1005,511 @@ class DeviceLinkApp(ctk.CTk):
         self.test_console.see("end")
         self.test_console.configure(state="disabled")
         self.send_prompt_btn.configure(state="normal")
+
+    def _build_calls_tab(self):
+        self.raw_contacts = [] # Store raw synced contacts
+        
+        # Horizontal Split container
+        container = ctk.CTkFrame(self.tab_calls, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ── LEFT PANEL: DIALER ──
+        dialer_panel = ctk.CTkFrame(
+            container,
+            fg_color="#0F172A",
+            width=340,
+            corner_radius=16,
+            border_width=1,
+            border_color="#1E293B"
+        )
+        dialer_panel.pack(side="left", fill="both", padx=(0, 10), pady=10)
+        dialer_panel.pack_propagate(False)
+
+        # Info Button at top-right of Dialer
+        info_btn = ctk.CTkButton(
+            dialer_panel,
+            text="ℹ",
+            width=28,
+            height=28,
+            corner_radius=14,
+            fg_color="#1E293B",
+            hover_color="#334155",
+            text_color="#38BDF8",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self.show_telephony_info_modal
+        )
+        info_btn.place(x=295, y=12)
+
+        # Title
+        dialer_title = ctk.CTkLabel(
+            dialer_panel,
+            text="Dialer",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#F8FAFC"
+        )
+        dialer_title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        # Number Display
+        self.phone_entry = ctk.CTkEntry(
+            dialer_panel,
+            placeholder_text="Enter number",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            justify="center",
+            height=48,
+            fg_color="#020617",
+            border_color="#1E293B",
+            text_color="#F8FAFC",
+            corner_radius=8
+        )
+        self.phone_entry.pack(fill="x", padx=20, pady=(0, 15))
+
+        # Keypad Grid Frame
+        keypad_frame = ctk.CTkFrame(dialer_panel, fg_color="transparent")
+        keypad_frame.pack(pady=5)
+
+        # Keys
+        keys = [
+            ("1", "2", "3"),
+            ("4", "5", "6"),
+            ("7", "8", "9"),
+            ("*", "0", "#")
+        ]
+
+        for r_idx, row in enumerate(keys):
+            for c_idx, key in enumerate(row):
+                btn = ctk.CTkButton(
+                    keypad_frame,
+                    text=key,
+                    width=70,
+                    height=48,
+                    corner_radius=24,
+                    font=ctk.CTkFont(size=18, weight="bold"),
+                    fg_color="#1E293B",
+                    hover_color="#334155",
+                    text_color="#CBD5E1",
+                    command=lambda k=key: self._dial_key_press(k)
+                )
+                btn.grid(row=r_idx, column=c_idx, padx=6, pady=5)
+
+        # Action Buttons row (Clear, Call, Backspace)
+        action_frame = ctk.CTkFrame(keypad_frame, fg_color="transparent")
+        action_frame.grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
+
+        clear_btn = ctk.CTkButton(
+            action_frame,
+            text="C",
+            width=54,
+            height=48,
+            corner_radius=24,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color="#374151",
+            hover_color="#4B5563",
+            text_color="#9CA3AF",
+            command=self._dial_clear
+        )
+        clear_btn.pack(side="left", padx=(6, 5))
+
+        call_btn = ctk.CTkButton(
+            action_frame,
+            text="📞",
+            width=80,
+            height=48,
+            corner_radius=24,
+            font=ctk.CTkFont(size=20),
+            fg_color="#10B981",
+            hover_color="#059669",
+            text_color="#F8FAFC",
+            command=self.dial_call
+        )
+        call_btn.pack(side="left", padx=5, fill="x", expand=True)
+
+        backspace_btn = ctk.CTkButton(
+            action_frame,
+            text="⌫",
+            width=54,
+            height=48,
+            corner_radius=24,
+            font=ctk.CTkFont(size=16),
+            fg_color="#374151",
+            hover_color="#4B5563",
+            text_color="#9CA3AF",
+            command=self._dial_backspace
+        )
+        backspace_btn.pack(side="left", padx=(5, 6))
+
+        # ── RIGHT PANEL: CONTACTS ──
+        contacts_panel = ctk.CTkFrame(
+            container,
+            fg_color="#1E293B",
+            corner_radius=16,
+            border_width=1,
+            border_color="#334155"
+        )
+        contacts_panel.pack(side="right", fill="both", expand=True, padx=(10, 0), pady=10)
+
+        # Header Title
+        contacts_title = ctk.CTkLabel(
+            contacts_panel,
+            text="Synced Contacts",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#F8FAFC"
+        )
+        contacts_title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        # Search Box
+        self.search_entry = ctk.CTkEntry(
+            contacts_panel,
+            placeholder_text="🔍 Search contacts by name or number...",
+            font=ctk.CTkFont(size=13),
+            height=36,
+            fg_color="#0F172A",
+            border_color="#334155",
+            text_color="#F8FAFC",
+            corner_radius=8
+        )
+        self.search_entry.pack(fill="x", padx=20, pady=(0, 15))
+        self.search_entry.bind("<KeyRelease>", self._on_search_change)
+
+        # Scrollable list container
+        self.contacts_scroll_frame = ctk.CTkScrollableFrame(
+            contacts_panel,
+            fg_color="transparent",
+            label_text=""
+        )
+        self.contacts_scroll_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Initial Empty State
+        self.display_empty_contacts_state()
+
+    def _on_search_change(self, event):
+        query = self.search_entry.get().strip()
+        self.filter_and_populate_contacts(query)
+
+    def display_empty_contacts_state(self, message="No contacts synced yet.\nPair your phone via Bluetooth & Wi-Fi to sync your contacts."):
+        # Clear frame first
+        for widget in self.contacts_scroll_frame.winfo_children():
+            widget.destroy()
+
+        empty_label = ctk.CTkLabel(
+            self.contacts_scroll_frame,
+            text=message,
+            font=ctk.CTkFont(size=14),
+            text_color="gray",
+            justify="center"
+        )
+        empty_label.pack(expand=True, pady=100)
+
+    def handle_sync_contacts(self, contacts):
+        """Called when a 'sync_contacts' WebSocket payload is received."""
+        self.raw_contacts = contacts
+        self.filter_and_populate_contacts("")
+
+    def filter_and_populate_contacts(self, query=""):
+        # Clear current list
+        for widget in self.contacts_scroll_frame.winfo_children():
+            widget.destroy()
+
+        filtered_contacts = []
+        q = query.lower()
+        for c in self.raw_contacts:
+            name = c.get("name", "")
+            number = c.get("number", "")
+            if not q or (q in name.lower() or q in number.lower()):
+                filtered_contacts.append(c)
+
+        if not filtered_contacts:
+            if not self.raw_contacts:
+                self.display_empty_contacts_state()
+            else:
+                self.display_empty_contacts_state("No contacts match your search query.")
+            return
+
+        # Sort contacts alphabetically by name
+        filtered_contacts.sort(key=lambda x: x.get("name", "").lower())
+
+        # Render list
+        for contact in filtered_contacts:
+            name = contact.get("name", "Unknown")
+            number = contact.get("number", "Unknown Number")
+
+            # Contact Card Row Frame
+            card = ctk.CTkFrame(
+                self.contacts_scroll_frame,
+                fg_color="#0F172A",
+                corner_radius=10,
+                border_width=1,
+                border_color="#1E293B"
+            )
+            card.pack(fill="x", padx=5, pady=4)
+
+            # Avatar Circle (Initials)
+            initial = name[0].upper() if name else "?"
+            avatar_frame = ctk.CTkFrame(
+                card,
+                width=36,
+                height=36,
+                corner_radius=18,
+                fg_color="#38BDF8"  # Beautiful cyan circle
+            )
+            avatar_frame.pack(side="left", padx=10, pady=8)
+            avatar_frame.pack_propagate(False)
+
+            avatar_label = ctk.CTkLabel(
+                avatar_frame,
+                text=initial,
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color="#0F172A"
+            )
+            avatar_label.pack(expand=True)
+
+            # Contact Details
+            details_frame = ctk.CTkFrame(card, fg_color="transparent")
+            details_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+            name_lbl = ctk.CTkLabel(
+                details_frame,
+                text=name,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color="#F8FAFC"
+            )
+            name_lbl.pack(anchor="w", pady=(2, 0))
+
+            num_lbl = ctk.CTkLabel(
+                details_frame,
+                text=number,
+                font=ctk.CTkFont(size=11),
+                text_color="#94A3B8"
+            )
+            num_lbl.pack(anchor="w", pady=(0, 2))
+
+            # Action Call Button (Green)
+            call_btn = ctk.CTkButton(
+                card,
+                text="📞",
+                width=38,
+                height=36,
+                corner_radius=8,
+                fg_color="#10B981",
+                hover_color="#059669",
+                font=ctk.CTkFont(size=14),
+                command=lambda num=number: self.dial_contact(num)
+            )
+            call_btn.pack(side="right", padx=12, pady=8)
+
+    def dial_contact(self, number):
+        self.phone_entry.delete(0, ctk.END)
+        self.phone_entry.insert(0, number)
+        self.dial_call()
+
+    def _dial_key_press(self, key):
+        self.phone_entry.insert(ctk.END, key)
+
+    def _dial_backspace(self):
+        curr = self.phone_entry.get()
+        if curr:
+            self.phone_entry.delete(len(curr) - 1)
+
+    def _dial_clear(self):
+        self.phone_entry.delete(0, ctk.END)
+
+    def show_telephony_info_modal(self):
+        # Create a beautiful information modal
+        info_win = ctk.CTkToplevel(self)
+        info_win.title("Bluetooth Telephony Instructions")
+        info_win.geometry("450x330")
+        info_win.resizable(False, False)
+        info_win.attributes("-topmost", True)
+
+        # Center the window
+        screen_width = info_win.winfo_screenwidth()
+        screen_height = info_win.winfo_screenheight()
+        x = (screen_width // 2) - 225
+        y = (screen_height // 2) - 165
+        info_win.geometry(f"+{x}+{y}")
+
+        title = ctk.CTkLabel(
+            info_win,
+            text="Bluetooth Calling Setup",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#F8FAFC"
+        )
+        title.pack(pady=(20, 15))
+
+        instructions = (
+            "To make and receive phone calls directly from your PC:\n\n"
+            "• Open Windows Bluetooth settings.\n"
+            "• Pair your PC with your Android phone.\n"
+            "• Go to properties of your paired phone and verify 'Phone audio' (Hands-Free Profile / HFP) is active.\n"
+            "• Incoming calls will show a pop-up overlay where you can answer or decline calls instantly.\n"
+            "• Outgoing call audio is automatically routed to your PC's mic & speaker."
+        )
+        
+        info_text = ctk.CTkLabel(
+            info_win,
+            text=instructions,
+            justify="left",
+            font=ctk.CTkFont(size=13),
+            text_color="#CBD5E1",
+            wraplength=390
+        )
+        info_text.pack(padx=25, pady=10)
+
+        close_btn = ctk.CTkButton(
+            info_win,
+            text="Got it",
+            width=120,
+            command=info_win.destroy
+        )
+        close_btn.pack(pady=(15, 20))
+
+    def dial_call(self):
+        number = self.phone_entry.get().strip()
+        if not number:
+            return
+        
+        from nexuslink.server.ws_server import get_active_peers, send_message_to_all_peers_sync
+        if not get_active_peers():
+            from tkinter import messagebox
+            messagebox.showwarning("No Connection", "Please connect your Android phone first via the QR code.")
+            return
+
+        send_message_to_all_peers_sync("make_call", {"number": number})
+
+    def show_call_overlay(self, number, name):
+        # Close any existing call overlay first to be safe
+        if hasattr(self, 'call_overlay_window') and self.call_overlay_window and self.call_overlay_window.winfo_exists():
+            self.call_overlay_window.destroy()
+
+        self.call_overlay_window = ctk.CTkToplevel(self)
+        self.call_overlay_window.title("Incoming Call")
+        self.call_overlay_window.geometry("340x220")
+        self.call_overlay_window.resizable(False, False)
+        self.call_overlay_window.attributes("-topmost", True)
+        
+        # Center the window on the screen
+        screen_width = self.call_overlay_window.winfo_screenwidth()
+        screen_height = self.call_overlay_window.winfo_screenheight()
+        x = (screen_width // 2) - 170
+        y = (screen_height // 2) - 110
+        self.call_overlay_window.geometry(f"+{x}+{y}")
+
+        # Top banner / title
+        title_lbl = ctk.CTkLabel(
+            self.call_overlay_window,
+            text="📱 INCOMING CALL",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#38BDF8"
+        )
+        title_lbl.pack(pady=(15, 5))
+
+        # Caller Name
+        self.caller_name_lbl = ctk.CTkLabel(
+            self.call_overlay_window,
+            text=name,
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        self.caller_name_lbl.pack(pady=(5, 2))
+
+        # Caller Number
+        self.caller_num_lbl = ctk.CTkLabel(
+            self.call_overlay_window,
+            text=number,
+            font=ctk.CTkFont(size=14),
+            text_color="gray"
+        )
+        self.caller_num_lbl.pack(pady=(0, 15))
+
+        # Buttons Frame
+        self.call_btn_frame = ctk.CTkFrame(self.call_overlay_window, fg_color="transparent")
+        self.call_btn_frame.pack(fill="x", padx=30, pady=10)
+
+        # Answer Button (Green)
+        self.answer_btn = ctk.CTkButton(
+            self.call_btn_frame,
+            text="📞 Answer",
+            width=120,
+            height=40,
+            fg_color="#10B981",
+            hover_color="#059669",
+            command=self.answer_call
+        )
+        self.answer_btn.pack(side="left", padx=5)
+
+        # Decline Button (Red)
+        self.decline_btn = ctk.CTkButton(
+            self.call_btn_frame,
+            text="❌ Decline",
+            width=120,
+            height=40,
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            command=self.decline_call
+        )
+        self.decline_btn.pack(side="right", padx=5)
+
+    def answer_call(self):
+        from nexuslink.server.ws_server import send_message_to_all_peers_sync
+        send_message_to_all_peers_sync("call_action", {"action": "answer"})
+        # Update HUD state to "Connected" with a Hang Up button
+        self.answer_btn.pack_forget()
+        self.decline_btn.pack_forget()
+        
+        self.call_overlay_window.title("Active Call")
+        self.caller_num_lbl.configure(text="In Call")
+        
+        self.hangup_btn = ctk.CTkButton(
+            self.call_btn_frame,
+            text="🛑 Hang Up",
+            width=240,
+            height=40,
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            command=self.hangup_call
+        )
+        self.hangup_btn.pack(padx=20)
+
+    def decline_call(self):
+        from nexuslink.server.ws_server import send_message_to_all_peers_sync
+        send_message_to_all_peers_sync("call_action", {"action": "decline"})
+        if hasattr(self, 'call_overlay_window') and self.call_overlay_window:
+            self.call_overlay_window.destroy()
+            self.call_overlay_window = None
+
+    def hangup_call(self):
+        from nexuslink.server.ws_server import send_message_to_all_peers_sync
+        send_message_to_all_peers_sync("call_action", {"action": "hangup"})
+        if hasattr(self, 'call_overlay_window') and self.call_overlay_window:
+            self.call_overlay_window.destroy()
+            self.call_overlay_window = None
+
+    def handle_call_status_change(self, status):
+        """Handle status updates like 'idle' (hangup) from the phone."""
+        if status == "idle":
+            if hasattr(self, 'call_overlay_window') and self.call_overlay_window and self.call_overlay_window.winfo_exists():
+                self.call_overlay_window.destroy()
+                self.call_overlay_window = None
+        elif status == "offhook":
+            # If the user answered the call on the phone physically, we also update the overlay state
+            if hasattr(self, 'call_overlay_window') and self.call_overlay_window and self.call_overlay_window.winfo_exists():
+                if hasattr(self, 'answer_btn') and self.answer_btn.winfo_exists():
+                    self.answer_btn.pack_forget()
+                if hasattr(self, 'decline_btn') and self.decline_btn.winfo_exists():
+                    self.decline_btn.pack_forget()
+                
+                self.call_overlay_window.title("Active Call")
+                self.caller_num_lbl.configure(text="In Call")
+                
+                if not hasattr(self, 'hangup_btn') or not self.hangup_btn.winfo_exists():
+                    self.hangup_btn = ctk.CTkButton(
+                        self.call_btn_frame,
+                        text="🛑 Hang Up",
+                        width=240,
+                        height=40,
+                        fg_color="#EF4444",
+                        hover_color="#DC2626",
+                        command=self.hangup_call
+                    )
+                    self.hangup_btn.pack(padx=20)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ android_app/.idea/
 android_app/local.properties
 android_app/**/*.iml
 android_app/.cxx/
+android_app/.kotlin/
 *.hprof
 
 # Windows Agent
