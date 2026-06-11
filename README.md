@@ -90,7 +90,7 @@ Pairing binds an Android device's Ed25519 public key to the Windows agent's peer
 1. Clone the repository.
 
    ```
-   git clone https://github.com/your-username/DeviceLink.git
+   git clone https://github.com/Unknnownnn/DeviceLink.git
    cd DeviceLink/windows_agent
    ```
 
