@@ -13,13 +13,13 @@ from config import WS_HOST, WS_PORT
 from nexuslink.crypto import HandshakeManager, SessionCipher
 from nexuslink.identity import IdentityManager
 from nexuslink.models import NexusMessage, MsgType
-from nexuslink.server.handlers import registry
-from nexuslink.server import ping_handler
-from nexuslink.server import clipboard_handler
-from nexuslink.server import file_handler
-from nexuslink.server import dropzone_watcher
-from nexuslink.server import agent_orchestrator
-from nexuslink.server import power_handler
+from .handlers import registry
+from . import ping_handler
+from . import clipboard_handler
+from . import file_handler
+from . import dropzone_watcher
+from . import agent_orchestrator
+from . import power_handler
 
 log = logging.getLogger("nexuslink.ws_server")
 
@@ -52,15 +52,13 @@ class NexusLinkServer:
         self._port = port
         self._server: Optional[websockets.WebSocketServer] = None
 
-    # ── Lifecycle ───────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         self._server = await websockets.serve(
             self._handle_connection,
             self._host,
             self._port,
-            # Binary subprotocol — all frames are bytes
-            max_size=10 * 1024 * 1024,  # 10 MB max frame size
+            max_size=10 * 1024 * 1024, 
         )
         log.info(
             "NexusLink WebSocket server listening on ws://%s:%d",
@@ -74,7 +72,6 @@ class NexusLinkServer:
             await self._server.wait_closed()
             log.info("WebSocket server stopped.")
 
-    # ── Connection handler ──────────────────────────────────────────────────
 
     async def _handle_connection(
         self,
@@ -95,10 +92,8 @@ class NexusLinkServer:
             log.info("Secure session established with %s", websocket.remote_address)
             print(f"[Server] ✓ Secure session with {websocket.remote_address}")
 
-            # Register connection
             active_peers.add(peer)
 
-            # Send dynamic deck shortcuts
             from nexuslink.settings_manager import SettingsManager
             settings = SettingsManager()
             shortcuts_msg = NexusMessage(
@@ -120,7 +115,6 @@ class NexusLinkServer:
             log.info("Peer disconnected: %s", peer)
             print(f"[Server] ✗ Peer disconnected: {peer}")
 
-    # ── Handshake ───────────────────────────────────────────────────────────
 
     async def _do_handshake(
         self,
@@ -130,7 +124,6 @@ class NexusLinkServer:
         Execute the 3-message X25519 + Ed25519 handshake.
         Returns a SessionCipher on success, None on failure.
         """
-        # ── Step 1: Receive HELLO ──
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
         except asyncio.TimeoutError:
@@ -154,12 +147,9 @@ class NexusLinkServer:
 
         log.info("HELLO received from client (ed25519: %s…)", client_ed25519_b64[:12])
 
-        # ── Step 2: Generate our ephemeral X25519 key + sign transcript ──
         hs = HandshakeManager()
         my_x25519_pub_raw = _b64url_decode(hs.public_key_b64)
         client_x25519_raw = _b64url_decode(client_x25519_b64)
-
-        # Sign (my_x25519_pub || client_x25519_pub) with our Ed25519 identity key
         transcript_to_sign = my_x25519_pub_raw + client_x25519_raw
         signature_raw = self._identity.sign(transcript_to_sign)
         signature_b64 = base64.urlsafe_b64encode(signature_raw).rstrip(b"=").decode()
@@ -175,7 +165,6 @@ class NexusLinkServer:
         await ws.send(hello_ack.to_bytes())
         log.info("HELLO_ACK sent.")
 
-        # ── Step 3: Receive HELLO_CONFIRM ──
         try:
             raw2 = await asyncio.wait_for(ws.recv(), timeout=15.0)
         except asyncio.TimeoutError:
@@ -194,7 +183,6 @@ class NexusLinkServer:
             log.warning("Expected HELLO_CONFIRM, got: %s", confirm.type)
             return None
 
-        # Verify client signature over (client_x25519_pub || my_x25519_pub)
         client_sig_raw = _b64url_decode(confirm.payload["signature"])
         transcript_expected = client_x25519_raw + my_x25519_pub_raw
         client_ed25519_raw = _b64url_decode(client_ed25519_b64)
@@ -203,14 +191,12 @@ class NexusLinkServer:
             log.warning("HELLO_CONFIRM signature verification FAILED")
             return None
 
-        log.info("HELLO_CONFIRM signature verified ✓")
+        log.info("HELLO_CONFIRM signature verified")
 
-        # ── Step 4: Derive session key ──
         session_key = hs.derive_session_key(client_x25519_b64)
-        log.info("Session key derived (32 bytes) ✓")
+        log.info("Session key derived (32 bytes)")
         return SessionCipher(session_key)
 
-    # ── Session loop ─────────────────────────────────────────────────────────
 
     async def _run_session(
         self,
@@ -235,9 +221,6 @@ class NexusLinkServer:
         finally:
             monitor_task.cancel()
             dropzone_task.cancel()
-
-
-# ── Crypto helpers ────────────────────────────────────────────────────────────
 
 def _b64url_decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")

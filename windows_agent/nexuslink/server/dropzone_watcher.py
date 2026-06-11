@@ -48,11 +48,16 @@ async def dropzone_monitor_task(
     
     log.info("Started watching PC DropZone: %s", uploads_dir)
 
+    _dropzone_idle = 0
+
     while True:
         try:
-            # Look for files in the DropZone
+            # Look for files in the DropZone (only check uploads_dir, not sent_dir)
+            found_file = False
             for item in uploads_dir.iterdir():
                 if item.is_file() and item.name != ".DS_Store":
+                    found_file = True
+                    _dropzone_idle = 0
                     # Wait for the file to be completely written to disk
                     ready = await _wait_for_file_ready(item)
                     if not ready:
@@ -100,7 +105,14 @@ async def dropzone_monitor_task(
                         dest_path.unlink()
                     shutil.move(str(item), str(dest_path))
 
-            await asyncio.sleep(2)
+            if not found_file:
+                _dropzone_idle += 1
+
+            # Adaptive back-off: poll fast when files appear, slow when idle
+            if _dropzone_idle > 3:
+                await asyncio.sleep(5)   # Idle: check every 5s to save disk I/O
+            else:
+                await asyncio.sleep(2)   # Active: check every 2s
         except asyncio.CancelledError:
             break
         except Exception as e:

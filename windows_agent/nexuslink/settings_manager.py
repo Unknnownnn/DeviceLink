@@ -21,6 +21,11 @@ class SettingsManager:
         self.default_settings = {
             "openrouter_api_key": "",
             "openrouter_model": "google/gemini-2.5-flash",
+            "allowed_launch_dirs": [
+                "C:\\Games",
+                "D:\\",
+                "E:\\"
+            ],
             "approved_apps": {
                 "notepad": "notepad.exe",
                 "calculator": "calc.exe",

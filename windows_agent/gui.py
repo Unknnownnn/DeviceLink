@@ -103,7 +103,8 @@ class DeviceLinkApp(ctk.CTk):
         self.tabview.pack(padx=20, pady=20, fill="both", expand=True)
 
         self.tab_status = self.tabview.add("Status")
-        self.tab_rules = self.tabview.add("AI Apps & Shortcuts")
+        self.tab_rules = self.tabview.add("Mobile Deck Shortcuts")
+        self.tab_agent_test = self.tabview.add("AI Agent Test")
 
         # Settings Gear Button (placed top-right relative to main window)
         self.settings_btn = ctk.CTkButton(
@@ -120,6 +121,7 @@ class DeviceLinkApp(ctk.CTk):
 
         self._build_status_tab()
         self._build_rules_tab()
+        self._build_agent_test_tab()
 
         # Start queue processing
         self.check_logs_loop()
@@ -331,7 +333,7 @@ class DeviceLinkApp(ctk.CTk):
         except Exception:
             pass
             
-        self.after(1000, self.update_connection_status_loop)
+        self.after(3000, self.update_connection_status_loop)
 
     def append_logs_to_ui(self, msgs):
         cleaned_msgs = []
@@ -367,6 +369,9 @@ class DeviceLinkApp(ctk.CTk):
             
         combined_msg = "".join(cleaned_msgs)
         self.log_history.append(combined_msg)
+        # Cap history to avoid unbounded memory growth
+        if len(self.log_history) > 2000:
+            self.log_history = self.log_history[-1000:]
         
         # If the logs window is currently open, print to the UI textbox
         if self.logs_window and self.logs_window.winfo_exists() and self.log_textbox:
@@ -379,114 +384,24 @@ class DeviceLinkApp(ctk.CTk):
                 pass
 
     def _build_rules_tab(self):
-        # Container frame for two columns
+        # Container frame for full-width layout
         self.rules_container = ctk.CTkFrame(self.tab_rules, fg_color="transparent")
         self.rules_container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Configure columns (1 row, 2 columns)
-        self.rules_container.grid_columnconfigure(0, weight=1, uniform="rules_col")
-        self.rules_container.grid_columnconfigure(1, weight=1, uniform="rules_col")
+        # Configure single column (1 row, 1 column)
+        self.rules_container.grid_columnconfigure(0, weight=1)
         self.rules_container.grid_rowconfigure(0, weight=1)
 
-        # Left Column: AI Allowed Apps
-        self.ai_col_frame = ctk.CTkFrame(self.rules_container)
-        self.ai_col_frame.grid(row=0, column=0, padx=(0, 10), sticky="nsew")
-
-        # Right Column: Shortcuts Menu
+        # Shortcuts Menu (spanning full width)
         self.shortcuts_col_frame = ctk.CTkFrame(self.rules_container)
-        self.shortcuts_col_frame.grid(row=0, column=1, padx=(10, 0), sticky="nsew")
+        self.shortcuts_col_frame.grid(row=0, column=0, sticky="nsew")
 
         self.refresh_rules_ui()
 
     def refresh_rules_ui(self):
         # 1. Clear previous content
-        for widget in self.ai_col_frame.winfo_children():
-            widget.destroy()
         for widget in self.shortcuts_col_frame.winfo_children():
             widget.destroy()
-
-        # ── LEFT COLUMN: AI Allowed Applications ───────────────────────
-        ctk.CTkLabel(
-            self.ai_col_frame, 
-            text="AI Allowed Applications / Tools", 
-            font=ctk.CTkFont(size=15, weight="bold")
-        ).pack(anchor="w", padx=15, pady=(15, 10))
-
-        # Add AI App Form Container (pack bottom first!)
-        ai_add_frame = ctk.CTkFrame(self.ai_col_frame, fg_color="transparent")
-        ai_add_frame.pack(fill="x", side="bottom", padx=15, pady=(5, 15))
-
-        self.ai_name_entry = ctk.CTkEntry(ai_add_frame, placeholder_text="App Name (e.g. spotify)")
-        self.ai_name_entry.pack(fill="x", pady=2)
-
-        ai_exe_row = ctk.CTkFrame(ai_add_frame, fg_color="transparent")
-        ai_exe_row.pack(fill="x", pady=2)
-        self.ai_exe_entry = ctk.CTkEntry(ai_exe_row, placeholder_text="Executable/Path (e.g. spotify.exe)")
-        self.ai_exe_entry.pack(side="left", expand=True, fill="x", padx=(0, 5))
-        self.ai_browse_btn = ctk.CTkButton(
-            ai_exe_row, text="Browse", width=60, 
-            command=lambda: self.browse_exe(self.ai_exe_entry)
-        )
-        self.ai_browse_btn.pack(side="left")
-
-        # Type Row for AI Apps
-        ai_type_row = ctk.CTkFrame(ai_add_frame, fg_color="transparent")
-        ai_type_row.pack(fill="x", pady=2)
-        ctk.CTkLabel(ai_type_row, text="Type:", font=ctk.CTkFont(size=12)).pack(side="left", padx=5)
-        self.ai_type_var = ctk.StringVar(value="app")
-        
-        def on_ai_type_change(val):
-            if val == "app":
-                self.ai_browse_btn.configure(state="normal")
-                self.ai_exe_entry.configure(placeholder_text="Executable/Path (e.g. spotify.exe)")
-            elif val == "steam":
-                self.ai_browse_btn.configure(state="disabled")
-                self.ai_exe_entry.configure(placeholder_text="Steam App ID (e.g. 730)")
-            elif val == "url":
-                self.ai_browse_btn.configure(state="disabled")
-                self.ai_exe_entry.configure(placeholder_text="Web URL (e.g. https://youtube.com)")
-
-        self.ai_type_menu = ctk.CTkOptionMenu(
-            ai_type_row, values=["app", "steam", "url"], 
-            variable=self.ai_type_var, command=on_ai_type_change, width=80
-        )
-        self.ai_type_menu.pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            ai_add_frame, text="Add AI Approved App", 
-            command=self.add_ai_app
-        ).pack(fill="x", pady=(5, 0))
-
-        # Scrollable list for AI apps (pack to expand)
-        ai_list_frame = ctk.CTkScrollableFrame(self.ai_col_frame, fg_color="transparent")
-        ai_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        apps = self.settings.get_approved_apps()
-        for name, exe in apps.items():
-            row = ctk.CTkFrame(ai_list_frame, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            
-            # Pack buttons FIRST on the right to keep them fixed in place
-            # Remove button
-            ctk.CTkButton(
-                row, text="Remove", width=55, height=22, fg_color="#E74C3C", hover_color="#C0392B", 
-                command=lambda n=name: self.remove_ai_app(n)
-            ).pack(side="right", padx=2)
-            
-            # Edit button
-            ctk.CTkButton(
-                row, text="Edit", width=45, height=22, fg_color="#3498DB", hover_color="#2980B9", 
-                command=lambda n=name, e=exe: self.edit_ai_app_window(n, e)
-            ).pack(side="right", padx=2)
-            
-            # Pack label on the left (show type in brackets)
-            app_type = "app"
-            if exe.isdigit():
-                app_type = "steam"
-            elif exe.startswith("http://") or exe.startswith("https://"):
-                app_type = "url"
-            display_name = f"{name.title()} [{app_type}]"
-            ctk.CTkLabel(row, text=display_name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(side="left", padx=5, fill="x", expand=True)
 
         # ── RIGHT COLUMN: Mobile Client Shortcuts ──────────────────────
         ctk.CTkLabel(
@@ -863,7 +778,7 @@ class DeviceLinkApp(ctk.CTk):
             
         self.settings_win = ctk.CTkToplevel(self)
         self.settings_win.title("Preferences & API Settings")
-        self.settings_win.geometry("500x380")
+        self.settings_win.geometry("500x460")
         self.settings_win.resizable(False, False)
         
         # Force transient and topmost so it sits nicely in front of main dashboard
@@ -915,6 +830,22 @@ class DeviceLinkApp(ctk.CTk):
         self.model_entry.insert(0, current_model)
         self.model_entry.pack(anchor="w", padx=15, pady=(0, 15))
         
+        # Allowed Launch Directories
+        ctk.CTkLabel(
+            form_frame, 
+            text="Allowed Launch Directories (semicolon separated):", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(0, 2))
+        
+        self.dirs_entry = ctk.CTkEntry(
+            form_frame, 
+            width=430, 
+            placeholder_text="C:\\Games; D:\\; E:\\"
+        )
+        current_dirs = "; ".join(self.settings.settings.get("allowed_launch_dirs", []))
+        self.dirs_entry.insert(0, current_dirs)
+        self.dirs_entry.pack(anchor="w", padx=15, pady=(0, 15))
+
         # Divider
         divider = ctk.CTkFrame(form_frame, height=2, fg_color="#2D3748")
         divider.pack(fill="x", padx=15, pady=10)
@@ -960,10 +891,118 @@ class DeviceLinkApp(ctk.CTk):
     def save_settings_preferences(self):
         new_key = self.api_key_entry.get().strip()
         new_model = self.model_entry.get().strip()
+        raw_dirs = self.dirs_entry.get().strip()
+        
+        # Parse directories list
+        dirs_list = [d.strip() for d in raw_dirs.split(";") if d.strip()]
         
         self.settings.update_openrouter_settings(new_key, new_model)
+        self.settings.settings["allowed_launch_dirs"] = dirs_list
+        self.settings.save()
+        
         print("[Console] Settings saved successfully.")
         self.settings_win.destroy()
+
+    def _build_agent_test_tab(self):
+        # Container frame
+        test_frame = ctk.CTkFrame(self.tab_agent_test, fg_color="transparent")
+        test_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # Title
+        ctk.CTkLabel(
+            test_frame, 
+            text="Interactive AI Agent Sandbox", 
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        # Instructions
+        ctk.CTkLabel(
+            test_frame, 
+            text="Type an NLP command below to test how the agent resolves, searches, or launches it on your PC.", 
+            text_color="gray",
+            font=ctk.CTkFont(size=12)
+        ).pack(anchor="w", pady=(0, 15))
+
+        # Input Row
+        input_row = ctk.CTkFrame(test_frame, fg_color="transparent")
+        input_row.pack(fill="x", pady=(0, 15))
+
+        self.prompt_entry = ctk.CTkEntry(
+            input_row, 
+            placeholder_text="e.g., launch Days Gone, open youtube, close notepad...",
+            height=35
+        )
+        self.prompt_entry.pack(side="left", expand=True, fill="x", padx=(0, 10))
+        
+        # Bind enter key
+        self.prompt_entry.bind("<Return>", lambda event: self.send_test_prompt())
+
+        self.send_prompt_btn = ctk.CTkButton(
+            input_row, 
+            text="Run Command", 
+            width=120, 
+            height=35,
+            command=self.send_test_prompt
+        )
+        self.send_prompt_btn.pack(side="right")
+
+        # Terminal Log Container
+        ctk.CTkLabel(
+            test_frame, 
+            text="Execution Log & Response:", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        self.test_console = ctk.CTkTextbox(
+            test_frame, 
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color="#0A0915",
+            text_color="#A5F3FC",  # Nice cyan text for sandbox
+            wrap="word"
+        )
+        self.test_console.pack(fill="both", expand=True)
+        self.test_console.configure(state="disabled")
+
+    def send_test_prompt(self):
+        prompt = self.prompt_entry.get().strip()
+        if not prompt:
+            return
+
+        self.prompt_entry.delete(0, ctk.END)
+        self.send_prompt_btn.configure(state="disabled")
+        
+        # Enable console and insert prompt
+        self.test_console.configure(state="normal")
+        self.test_console.insert("end", f"\n>>> User: {prompt}\n")
+        self.test_console.insert("end", "[System] Agent is thinking...\n")
+        self.test_console.see("end")
+        self.test_console.configure(state="disabled")
+
+        # Run in worker thread so the UI doesn't freeze during API request
+        def worker():
+            try:
+                # Import agent here to avoid circular imports or early setup issues
+                from nexuslink.server.agent_orchestrator import agent
+                
+                # Execute NLP prompt
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(agent.execute_command(prompt))
+                loop.close()
+                
+                # Update UI in main thread safely
+                self.after(0, lambda: self.append_test_result(f"[Agent Result]\n{result}\n"))
+            except Exception as e:
+                self.after(0, lambda: self.append_test_result(f"[Error] {e}\n"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def append_test_result(self, text):
+        self.test_console.configure(state="normal")
+        self.test_console.insert("end", text)
+        self.test_console.see("end")
+        self.test_console.configure(state="disabled")
+        self.send_prompt_btn.configure(state="normal")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,6 @@ import logging
 import sys
 import os
 
-# ── Make 'nexuslink' package importable from this directory ──────────────────
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import WS_PORT, WS_HOST
@@ -27,8 +26,6 @@ from nexuslink.qr_provisioning import print_qr_to_console, save_qr_as_png
 from nexuslink.server import NexusLinkServer
 
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -36,23 +33,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("nexuslink.main")
 
-
-# ── Main orchestration ────────────────────────────────────────────────────────
-
 async def run(port: int) -> None:
-    # 1. Load / generate device identity
     identity = IdentityManager()
     print(f"\n[Identity] Device fingerprint: {identity.fingerprint}")
-
-    # 2. Show pairing QR code
     print_qr_to_console(identity.fingerprint, port)
     png_path = save_qr_as_png(identity.fingerprint, port)
 
-    # 3. Set up services
     discovery = DiscoveryPublisher(port=port, fingerprint=identity.fingerprint)
     server = NexusLinkServer(identity=identity, host=WS_HOST, port=port)
 
-    # 4. Start everything concurrently
     await discovery.start()
     await server.start()
     print(f"[QR] Pairing QR code saved to: {png_path}")
@@ -61,8 +50,7 @@ async def run(port: int) -> None:
     print("[DeviceLink] Press Ctrl+C to stop.\n")
 
     try:
-        # Keep running until interrupted
-        await asyncio.Future()  # runs forever
+        await asyncio.Future()
     except asyncio.CancelledError:
         pass
     finally:
