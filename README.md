@@ -16,7 +16,6 @@ DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC an
 - [Pairing](#pairing)
 - [AI Agent](#ai-agent)
 - [Configuration](#configuration)
-- [Project Structure](#project-structure)
 - [Building the Windows Executable](#building-the-windows-executable)
 
 ---
