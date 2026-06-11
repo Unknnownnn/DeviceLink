@@ -1,79 +1,39 @@
 package com.nexuslink.app.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nexuslink.app.data.NexusDevice
-import com.nexuslink.app.ui.theme.Cyan400
-import com.nexuslink.app.ui.theme.Emerald400
-import com.nexuslink.app.ui.theme.Indigo800
-import com.nexuslink.app.ui.theme.OnSurfaceDim
-import com.nexuslink.app.ui.theme.Surface600
-import com.nexuslink.app.ui.theme.Surface700
-import com.nexuslink.app.ui.theme.Surface800
-import com.nexuslink.app.ui.theme.Blue400
-import com.nexuslink.app.ui.theme.Blue200
+import com.nexuslink.app.ui.theme.*
 import com.nexuslink.app.ui.viewmodels.DiscoveryViewModel
+import com.nexuslink.app.updater.GitHubUpdater
+import com.nexuslink.app.updater.UpdaterState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Device Discovery Screen.
@@ -86,9 +46,112 @@ import kotlinx.coroutines.delay
 fun DeviceListScreen(
     onDeviceSelected: (host: String, port: Int, isPaired: Boolean, fingerprint: String?) -> Unit,
     onManualScan: () -> Unit,
+    onSettingsClicked: () -> Unit,
     viewModel: DiscoveryViewModel = hiltViewModel(),
 ) {
     val devices by viewModel.devices.collectAsState()
+    val context = LocalContext.current
+    val updater = remember { GitHubUpdater(context) }
+    val updaterState by updater.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    // Check for updates automatically on app startup (only once per session)
+    LaunchedEffect(Unit) {
+        if (!GitHubUpdater.hasCheckedThisSession) {
+            updater.checkForUpdates(force = false)
+        }
+    }
+
+    // Modal popup if a new update is found on GitHub (and ONLY then, once per session)
+    var showUpdatePopup by remember { mutableStateOf(!GitHubUpdater.hasDismissedPopupThisSession) }
+    val currentUpdaterState = updaterState
+    if (showUpdatePopup && currentUpdaterState is UpdaterState.UpdateAvailable) {
+        AlertDialog(
+            onDismissRequest = { 
+                showUpdatePopup = false
+                GitHubUpdater.hasDismissedPopupThisSession = true
+            },
+            title = {
+                Text(
+                    text = "Update Available",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "A new version (${currentUpdaterState.latestVersion}) of DeviceLink is available. Would you like to update now?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showUpdatePopup = false
+                        GitHubUpdater.hasDismissedPopupThisSession = true
+                        scope.launch {
+                            updater.downloadAndInstall(currentUpdaterState.downloadUrl)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Blue400)
+                ) {
+                    Text("Update", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { 
+                        showUpdatePopup = false
+                        GitHubUpdater.hasDismissedPopupThisSession = true
+                    }
+                ) {
+                    Text("Later", color = OnSurfaceDim)
+                }
+            },
+            containerColor = Surface800,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Modal progress overlay while the update download is active
+    if (currentUpdaterState is UpdaterState.Downloading) {
+        AlertDialog(
+            onDismissRequest = {}, // Force non-dismissible
+            title = {
+                Text(
+                    text = "Downloading Update...",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    LinearProgressIndicator(
+                        progress = currentUpdaterState.progress,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp),
+                        color = Blue400,
+                        trackColor = Surface600
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "${(currentUpdaterState.progress * 100).toInt()}% completed",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White
+                    )
+                }
+            },
+            confirmButton = {},
+            containerColor = Surface800,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -97,9 +160,9 @@ fun DeviceListScreen(
                     Column {
                         Text(
                             text = "DeviceLink",
-                            style = MaterialTheme.typography.headlineLarge,
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
-                            color = Blue200,
+                            color = Color.White,
                         )
                         Text(
                             text = "Local Network Devices",
@@ -113,16 +176,23 @@ fun DeviceListScreen(
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
                 actions = {
-                    ScanningIndicator()
-                    Spacer(Modifier.width(12.dp))
+                    IconButton(onClick = onSettingsClicked) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = Color.White
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                 },
             )
         },
         floatingActionButton = {
-            androidx.compose.material3.FloatingActionButton(
+            FloatingActionButton(
                 onClick = onManualScan,
                 containerColor = Blue400,
-                contentColor = Color.White
+                contentColor = Color.White,
+                shape = RoundedCornerShape(16.dp)
             ) {
                 Icon(
                     painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_camera),
@@ -130,7 +200,7 @@ fun DeviceListScreen(
                 )
             }
         },
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Surface900,
     ) { padding ->
         Column(
             modifier = Modifier
@@ -142,8 +212,8 @@ fun DeviceListScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(16.dp),
                 ) {
                     itemsIndexed(devices) { index, device ->
                         AnimatedDeviceCard(
@@ -161,36 +231,6 @@ fun DeviceListScreen(
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 @Composable
-private fun ScanningIndicator() {
-    val infiniteTransition = rememberInfiniteTransition(label = "scan_pulse")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 0.8f,
-        targetValue = 1.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(800, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulse_scale",
-    )
-
-    Box(
-        modifier = Modifier
-            .size(36.dp)
-            .scale(scale)
-            .background(Cyan400.copy(alpha = 0.15f), CircleShape)
-            .border(1.dp, Cyan400.copy(alpha = 0.5f), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Default.Wifi,
-            contentDescription = "Scanning",
-            tint = Cyan400,
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-@Composable
 private fun AnimatedDeviceCard(
     device: NexusDevice,
     index: Int,
@@ -198,13 +238,13 @@ private fun AnimatedDeviceCard(
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        delay(index * 80L)
+        delay(index * 60L)
         visible = true
     }
 
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + slideInVertically { it / 2 },
+        enter = fadeIn() + slideInVertically { it / 3 },
     ) {
         DeviceCard(device = device, onClick = onClick)
     }
@@ -215,100 +255,85 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .border(1.dp, Surface600, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface700),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Surface800),
     ) {
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            Indigo800.copy(alpha = 0.5f),
-                            Surface700,
-                        )
-                    )
-                )
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Row(
+            // Flat, solid computer icon block (replaces the pulsing gradient look)
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    .size(48.dp)
+                    .background(Surface700, RoundedCornerShape(12.dp))
+                    .border(1.dp, Surface600, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
             ) {
-                // Device icon
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(Blue400.copy(alpha = 0.3f), Color.Transparent)
-                            ),
-                            CircleShape,
-                        )
-                        .border(1.dp, Blue400.copy(alpha = 0.4f), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Computer,
-                        contentDescription = null,
-                        tint = Blue400,
-                        modifier = Modifier.size(28.dp),
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.Computer,
+                    contentDescription = null,
+                    tint = Blue400,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
 
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = device.displayName,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = device.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${device.host}:${device.port}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = OnSurfaceDim,
+                )
+                if (device.fingerprint != null) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "${device.host}:${device.port}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = OnSurfaceDim,
+                        text = "Fingerprint: ${device.fingerprint.take(12)}…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Cyan400,
+                        letterSpacing = 0.5.sp,
                     )
-                    if (device.fingerprint != null) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "fp: ${device.fingerprint.take(12)}…",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Cyan400,
-                            letterSpacing = 0.5.sp,
-                        )
-                    }
                 }
+            }
 
-                // Paired badge or connect arrow
-                if (device.isPaired) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.Shield,
-                            contentDescription = "Paired",
-                            tint = Emerald400,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Text(
-                            text = "TRUSTED",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Emerald400,
-                            fontSize = 9.sp,
-                        )
-                    }
-                } else {
+            // Clean modern badges (no generic templates)
+            if (device.isPaired) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.Default.Link,
-                        contentDescription = "Connect",
-                        tint = Blue400,
-                        modifier = Modifier.size(22.dp),
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = "Trusted",
+                        tint = Emerald400,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "TRUSTED",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Emerald400,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
                     )
                 }
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Link,
+                    contentDescription = "Connect",
+                    tint = Blue400,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
@@ -316,17 +341,6 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
 
 @Composable
 private fun EmptyDiscoveryState() {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "alpha",
-    )
-
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
@@ -334,34 +348,29 @@ private fun EmptyDiscoveryState() {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.padding(32.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(100.dp)
-                    .background(
-                        Blue400.copy(alpha = alpha * 0.15f),
-                        CircleShape,
-                    )
-                    .border(2.dp, Blue400.copy(alpha = alpha * 0.5f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = null,
-                    tint = Blue400.copy(alpha = alpha),
-                    modifier = Modifier.size(48.dp),
-                )
-            }
+            // Elegant, thin CircularProgressIndicator instead of pulsing magnifying glass
+            CircularProgressIndicator(
+                color = Blue400,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(48.dp)
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
             Text(
-                text = "Scanning for Devices…",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                text = "Searching for PC Host...",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
             )
             Text(
-                text = "Make sure your PC agent is running\nand connected to the same network",
+                text = "Make sure the DeviceLink agent is running on your PC and both devices are on the same Wi-Fi network.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = OnSurfaceDim,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp
             )
         }
     }

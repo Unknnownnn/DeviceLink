@@ -44,6 +44,7 @@ object Routes {
     const val DEVICE_LIST = "device_list"
     const val QR_SCANNER  = "qr_scanner?host={host}&port={port}"
     const val CONNECTION  = "connection/{host}/{port}/{fingerprint}"
+    const val SETTINGS    = "settings"
 
     fun qrScanner(host: String? = null, port: Int? = null): String {
         return if (host != null && port != null) "qr_scanner?host=$host&port=$port"
@@ -69,7 +70,16 @@ fun NexusLinkNavGraph(navController: NavHostController) {
                 },
                 onManualScan = {
                     navController.navigate(Routes.qrScanner())
+                },
+                onSettingsClicked = {
+                    navController.navigate(Routes.SETTINGS)
                 }
+            )
+        }
+
+        composable(Routes.SETTINGS) {
+            com.nexuslink.app.ui.screens.SettingsScreen(
+                onBack = { navController.popBackStack() }
             )
         }
 
