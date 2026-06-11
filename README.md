@@ -16,7 +16,6 @@ DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC an
 - [Pairing](#pairing)
 - [AI Agent](#ai-agent)
 - [Configuration](#configuration)
-- [Project Structure](#project-structure)
 - [Building the Windows Executable](#building-the-windows-executable)
 
 ---
@@ -91,7 +90,7 @@ Pairing binds an Android device's Ed25519 public key to the Windows agent's peer
 1. Clone the repository.
 
    ```
-   git clone https://github.com/your-username/DeviceLink.git
+   git clone https://github.com/Unknnownnn/DeviceLink.git
    cd DeviceLink/windows_agent
    ```
 
