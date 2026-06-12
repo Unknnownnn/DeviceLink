@@ -17,6 +17,7 @@ import com.nexuslink.app.network.ConnectionState
 import com.nexuslink.app.network.FileTransferManager
 import com.nexuslink.app.network.NexusWebSocketClient
 import com.nexuslink.app.network.SessionEvent
+import com.nexuslink.app.services.BluetoothHFPManager
 import com.nexuslink.app.services.NexusForegroundService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -30,15 +31,6 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 private const val TAG = "ConnectionViewModel"
-
-data class ConnectionUiState(
-    val connectionState: ConnectionState = ConnectionState.Disconnected,
-    val pingCount: Int = 0,
-    val pongCount: Int = 0,
-    val lastPongPayload: String = "",
-    val lastClipboardSync: String = "",
-    val errorMessage: String? = null,
-)
 
 /**
  * ViewModel for the active connection screen.
@@ -58,6 +50,9 @@ class ConnectionViewModel @Inject constructor(
     val toastEvents = connectionManager.toastEvents
     val nlpResponses = connectionManager.nlpResponses
     val deckShortcuts = connectionManager.deckShortcuts
+    val bluetoothConnected = connectionManager.bluetoothConnected
+
+
 
     private val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
@@ -76,10 +71,6 @@ class ConnectionViewModel @Inject constructor(
         ContextCompat.startForegroundService(context, intent)
 
         connectionManager.connect(host, port, peerFingerprint)
-    }
-
-    fun sendPing() {
-        connectionManager.sendPing()
     }
 
     fun pushClipboardToPc() {
@@ -106,6 +97,7 @@ class ConnectionViewModel @Inject constructor(
 
     fun sendFile(uri: Uri) {
         fileTransferManager.sendFile(uri)
+        connectionManager.addLog("Sending file to PC: ${uri.lastPathSegment ?: "file"}")
         viewModelScope.launch { connectionManager.emitToast("Sending file to PC...") }
     }
 
@@ -115,6 +107,10 @@ class ConnectionViewModel @Inject constructor(
             action = NexusForegroundService.ACTION_STOP
         }
         ContextCompat.startForegroundService(context, intent)
+    }
+
+    fun setLogsSubscription(enable: Boolean) {
+        connectionManager.setLogsSubscription(enable)
     }
 
     override fun onCleared() {

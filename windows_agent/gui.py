@@ -69,15 +69,12 @@ def create_tray_image():
             square_img = Image.new("RGBA", (new_size, new_size), (0, 0, 0, 0))
             square_img.paste(img, ((new_size - w) // 2, (new_size - h) // 2))
             img = square_img
-            white_img = Image.new("RGBA", img.size, (255, 255, 255, 255))
-            _, _, _, alpha = img.split()
-            white_img.putalpha(alpha)
             resample_filter = getattr(Image, 'Resampling', None)
             if resample_filter:
                 resample = resample_filter.LANCZOS
             else:
                 resample = Image.ANTIALIAS
-            return white_img.resize((64, 64), resample)
+            return img.resize((64, 64), resample)
         except Exception:
             pass
 
@@ -96,6 +93,9 @@ class DeviceLinkApp(ctk.CTk):
         self.resizable(False, False)
         self.settings = SettingsManager()
         self.check_single_instance()
+
+        if "--minimized" in sys.argv:
+            self.withdraw()
 
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
@@ -369,6 +369,15 @@ class DeviceLinkApp(ctk.CTk):
         if len(self.log_history) > 2000:
             self.log_history = self.log_history[-1000:]
         
+        # Forward to Android companion (excluding recursive pc_log events to avoid loops)
+        forward_msgs = [m for m in cleaned_msgs if "pc_log" not in m]
+        if forward_msgs:
+            try:
+                from nexuslink.server.ws_server import send_message_to_all_peers_sync
+                send_message_to_all_peers_sync("pc_log", {"log": "".join(forward_msgs)})
+            except Exception:
+                pass
+        
         # If the logs window is currently open, print to the UI textbox
         if self.logs_window and self.logs_window.winfo_exists() and self.log_textbox:
             try:
@@ -410,7 +419,7 @@ class DeviceLinkApp(ctk.CTk):
         sc_add_frame = ctk.CTkFrame(self.shortcuts_col_frame, fg_color="transparent")
         sc_add_frame.pack(fill="x", side="bottom", padx=15, pady=(5, 15))
 
-        self.sc_name_entry = ctk.CTkEntry(sc_add_frame, placeholder_text="Shortcut Label (e.g. Play CS2)")
+        self.sc_name_entry = ctk.CTkEntry(sc_add_frame, placeholder_text="Shortcut Label")
         self.sc_name_entry.pack(fill="x", pady=2)
 
         sc_target_row = ctk.CTkFrame(sc_add_frame, fg_color="transparent")
@@ -662,8 +671,13 @@ class DeviceLinkApp(ctk.CTk):
         sync_shortcuts_to_active_peers()
 
     def check_single_instance(self):
+        import ctypes
         self.lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            try:
+                self.lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except Exception:
+                pass
         try:
             self.lock_socket.bind(("127.0.0.1", 47299))
             self.lock_socket.listen(5)
@@ -699,10 +713,10 @@ class DeviceLinkApp(ctk.CTk):
     def setup_tray(self):
         image = create_tray_image()
         menu = pystray.Menu(
-            pystray.MenuItem("Show Dashboard", self.show_window),
+            pystray.MenuItem("Show Dashboard", self.show_window, default=True),
             pystray.MenuItem("Quit", self.quit_app)
         )
-        self.tray_icon = pystray.Icon("DeviceLink", image, "DeviceLink Agent", menu)
+        self.tray_icon = pystray.Icon("DeviceLink", image, "DeviceLink Agent", menu, action=lambda icon, item=None: self.show_window())
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def hide_window(self):
@@ -750,11 +764,21 @@ class DeviceLinkApp(ctk.CTk):
         else:
             enabled = self.is_run_on_startup_enabled()
         
+        # Check minimized setting
+        minimized = False
+        if hasattr(self, "settings_minimized_var"):
+            minimized = self.settings_minimized_var.get()
+        else:
+            minimized = self.settings.settings.get("start_minimized_on_launch", False)
+        
         if getattr(sys, 'frozen', False):
             exe_path = f'"{sys.executable}"'
         else:
             script_path = os.path.abspath(sys.argv[0])
             exe_path = f'"{sys.executable}" "{script_path}"'
+            
+        if minimized:
+            exe_path += " --minimized"
             
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
@@ -780,7 +804,7 @@ class DeviceLinkApp(ctk.CTk):
             
         self.settings_win = ctk.CTkToplevel(self)
         self.settings_win.title("Preferences & API Settings")
-        self.settings_win.geometry("500x460")
+        self.settings_win.geometry("500x560")
         self.settings_win.resizable(False, False)
         
         # Force transient and topmost so it sits nicely in front of main dashboard
@@ -794,8 +818,8 @@ class DeviceLinkApp(ctk.CTk):
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(anchor="w", padx=20, pady=(20, 10))
         
-        # Form Container
-        form_frame = ctk.CTkFrame(self.settings_win)
+        # Form Container (Scrollable Frame to prevent window truncation)
+        form_frame = ctk.CTkScrollableFrame(self.settings_win)
         form_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
         
         # OpenRouter API Key
@@ -866,7 +890,16 @@ class DeviceLinkApp(ctk.CTk):
             variable=self.settings_startup_var,
             command=self.toggle_startup
         )
-        self.settings_startup_switch.pack(anchor="w", padx=15, pady=(5, 15))
+        self.settings_startup_switch.pack(anchor="w", padx=15, pady=(5, 5))
+        
+        self.settings_minimized_var = ctk.BooleanVar(value=self.settings.settings.get("start_minimized_on_launch", False))
+        self.settings_minimized_switch = ctk.CTkSwitch(
+            form_frame, 
+            text="Start minimized to system tray on Windows launch", 
+            variable=self.settings_minimized_var,
+            command=self.toggle_startup
+        )
+        self.settings_minimized_switch.pack(anchor="w", padx=15, pady=(5, 15))
         
         # Buttons Row
         btn_row = ctk.CTkFrame(self.settings_win, fg_color="transparent")
@@ -900,6 +933,8 @@ class DeviceLinkApp(ctk.CTk):
         
         self.settings.update_openrouter_settings(new_key, new_model)
         self.settings.settings["allowed_launch_dirs"] = dirs_list
+        if hasattr(self, "settings_minimized_var"):
+            self.settings.settings["start_minimized_on_launch"] = self.settings_minimized_var.get()
         self.settings.save()
         
         print("[Console] Settings saved successfully.")
@@ -931,7 +966,7 @@ class DeviceLinkApp(ctk.CTk):
 
         self.prompt_entry = ctk.CTkEntry(
             input_row, 
-            placeholder_text="e.g., launch Days Gone, open youtube, close notepad...",
+            placeholder_text="e.g., launch steam, open youtube, close notepad...",
             height=35
         )
         self.prompt_entry.pack(side="left", expand=True, fill="x", padx=(0, 10))
@@ -1047,7 +1082,27 @@ class DeviceLinkApp(ctk.CTk):
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color="#F8FAFC"
         )
-        dialer_title.pack(anchor="w", padx=20, pady=(20, 10))
+        dialer_title.pack(anchor="w", padx=20, pady=(20, 5))
+
+        # Bluetooth Status Indicator
+        self.bt_status_frame = ctk.CTkFrame(dialer_panel, fg_color="#1E293B", height=28, corner_radius=6)
+        self.bt_status_frame.pack(anchor="w", padx=20, pady=(0, 10))
+        
+        self.bt_status_dot = ctk.CTkLabel(
+            self.bt_status_frame, 
+            text="●", 
+            text_color="#EF4444", 
+            font=ctk.CTkFont(size=12)
+        )
+        self.bt_status_dot.pack(side="left", padx=(10, 5))
+        
+        self.bt_status_text = ctk.CTkLabel(
+            self.bt_status_frame, 
+            text="Bluetooth HFP: Disconnected", 
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#CBD5E1"
+        )
+        self.bt_status_text.pack(side="left", padx=(0, 10))
 
         # Number Display
         self.phone_entry = ctk.CTkEntry(
@@ -1182,6 +1237,13 @@ class DeviceLinkApp(ctk.CTk):
         self.display_empty_contacts_state()
 
     def _on_search_change(self, event):
+        # Cancel any pending search query to debounce inputs
+        if hasattr(self, "_search_after_id") and self._search_after_id:
+            self.after_cancel(self._search_after_id)
+        self._search_after_id = self.after(200, self._run_debounced_search)
+
+    def _run_debounced_search(self):
+        self._search_after_id = None
         query = self.search_entry.get().strip()
         self.filter_and_populate_contacts(query)
 
@@ -1227,8 +1289,12 @@ class DeviceLinkApp(ctk.CTk):
         # Sort contacts alphabetically by name
         filtered_contacts.sort(key=lambda x: x.get("name", "").lower())
 
+        total_matches = len(filtered_contacts)
+        max_display = 50
+        contacts_to_render = filtered_contacts[:max_display]
+
         # Render list
-        for contact in filtered_contacts:
+        for contact in contacts_to_render:
             name = contact.get("name", "Unknown")
             number = contact.get("number", "Unknown Number")
 
@@ -1295,6 +1361,16 @@ class DeviceLinkApp(ctk.CTk):
                 command=lambda num=number: self.dial_contact(num)
             )
             call_btn.pack(side="right", padx=12, pady=8)
+
+        if total_matches > max_display:
+            more_label = ctk.CTkLabel(
+                self.contacts_scroll_frame,
+                text=f"Showing top {max_display} of {total_matches} contacts. Type more to filter...",
+                font=ctk.CTkFont(size=12, slant="italic"),
+                text_color="#94A3B8",
+                pady=10
+            )
+            more_label.pack(fill="x", padx=5)
 
     def dial_contact(self, number):
         self.phone_entry.delete(0, ctk.END)
@@ -1510,6 +1586,16 @@ class DeviceLinkApp(ctk.CTk):
                         command=self.hangup_call
                     )
                     self.hangup_btn.pack(padx=20)
+
+    def handle_bt_status_change(self, connected):
+        """Handle Bluetooth status updates from the phone."""
+        if hasattr(self, 'bt_status_dot') and hasattr(self, 'bt_status_text'):
+            if connected:
+                self.bt_status_dot.configure(text_color="#10B981") # Green
+                self.bt_status_text.configure(text="Bluetooth HFP: Connected")
+            else:
+                self.bt_status_dot.configure(text_color="#EF4444") # Red
+                self.bt_status_text.configure(text="Bluetooth HFP: Disconnected")
 
 
 if __name__ == "__main__":

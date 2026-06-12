@@ -65,6 +65,33 @@ class SanitizationSandbox:
         except Exception as e:
             return f"Failed to count files: {e}"
 
+    @staticmethod
+    def _find_start_menu_shortcut(app_name: str):
+        """
+        Searches the Start Menu directories for a shortcut (.lnk) matching the given app name.
+        Returns the absolute path to the .lnk file if found, otherwise None.
+        """
+        import os
+        from pathlib import Path
+        
+        app_name_lower = app_name.lower().strip()
+        
+        start_menu_paths = [
+            Path(os.environ.get("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+            Path(os.path.expandvars("%APPDATA%")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        ]
+        
+        for start_path in start_menu_paths:
+            if not start_path.exists():
+                continue
+            for root, dirs, files in os.walk(start_path):
+                for file in files:
+                    if file.lower().endswith(".lnk"):
+                        name_without_ext = file[:-4].lower()
+                        if app_name_lower == name_without_ext or app_name_lower in name_without_ext:
+                            return os.path.join(root, file)
+        return None
+
     def launch_application(self, target: str, arguments: str = "") -> str:
         """
         Launches an application or web URL.
@@ -87,6 +114,11 @@ class SanitizationSandbox:
                 exe = approved[name_lower]
                 return self._execute_safe_exe(exe, arguments)
                 
+            # If not in approved list, dynamically search in Start Menu shortcuts
+            shortcut_path = self._find_start_menu_shortcut(target)
+            if shortcut_path:
+                return self._execute_safe_exe(shortcut_path, arguments)
+                
             resolved_exe = shutil.which(target) or target
             resolved_lower = resolved_exe.lower()
             
@@ -103,6 +135,7 @@ class SanitizationSandbox:
                 os.environ.get("SystemRoot", "C:\\Windows").lower(),
                 os.environ.get("ProgramFiles", "C:\\Program Files").lower(),
                 os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)").lower(),
+                os.environ.get("ProgramData", "C:\\ProgramData").lower(),
                 os.path.expandvars("%APPDATA%").lower(),
                 os.path.expandvars("%LOCALAPPDATA%").lower(),
                 str(Path.home() / "Desktop").lower(),
@@ -132,13 +165,13 @@ class SanitizationSandbox:
         elif exe.lower().startswith(("http://", "https://")):
             webbrowser.open(exe)
             return f"Successfully opened web link: {exe}"
-        elif exe.lower().endswith((".lnk", ".url")):
+        elif exe.lower().endswith((".lnk", ".url")) or exe.lower().startswith("shell:") or (":" in exe and not exe.startswith(("http://", "https://")) and exe.split(":")[0].isalnum()):
             try:
                 import ctypes
                 ctypes.windll.shell32.ShellExecuteW(None, "open", exe, arguments or None, None, 1)
-                return f"Successfully opened shortcut: {exe}"
+                return f"Successfully opened target via ShellExecute: {exe}"
             except Exception as e:
-                return f"Failed to open shortcut via ShellExecute: {e}"
+                return f"Failed to open target via ShellExecute: {e}"
         else:
             args = shlex.split(exe, posix=False)
             if arguments:
@@ -180,6 +213,13 @@ class SanitizationSandbox:
             elif exe.startswith("http://") or exe.startswith("https://"):
                 webbrowser.open(exe)
                 return f"Successfully opened shortcut web link: {shortcut_id}"
+            elif exe.lower().endswith((".lnk", ".url")) or exe.lower().startswith("shell:") or (":" in exe and not exe.startswith(("http://", "https://")) and exe.split(":")[0].isalnum()):
+                try:
+                    import ctypes
+                    ctypes.windll.shell32.ShellExecuteW(None, "open", exe, None, None, 1)
+                    return f"Successfully launched shortcut target: {shortcut_id}"
+                except Exception as e:
+                    return f"Failed to launch shortcut target via ShellExecute: {e}"
             else:
                 args = shlex.split(exe, posix=False)
                 try:

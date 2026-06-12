@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nexuslink.app.data.NexusDevice
+import com.nexuslink.app.network.ConnectionState
 import com.nexuslink.app.ui.theme.*
 import com.nexuslink.app.ui.viewmodels.DiscoveryViewModel
 import com.nexuslink.app.updater.GitHubUpdater
@@ -50,14 +51,45 @@ fun DeviceListScreen(
     viewModel: DiscoveryViewModel = hiltViewModel(),
 ) {
     val devices by viewModel.devices.collectAsState()
+    val connectionState by viewModel.connectionState.collectAsState()
+    val autoConnectEnabled by viewModel.preferencesManager.autoConnectEnabled.collectAsState()
+    val preferredFp by viewModel.preferencesManager.preferredAutoConnectFingerprint.collectAsState()
+    val trustedPeers by viewModel.trustedPeers.collectAsState()
+
     val context = LocalContext.current
     val updater = remember { GitHubUpdater(context) }
     val updaterState by updater.state.collectAsState()
     val scope = rememberCoroutineScope()
+
     // Check for updates automatically on app startup (only once per session)
     LaunchedEffect(Unit) {
         if (!GitHubUpdater.hasCheckedThisSession) {
             updater.checkForUpdates(force = false)
+        }
+    }
+
+    // Auto-connect to a verified device if found
+    LaunchedEffect(devices, connectionState, autoConnectEnabled, preferredFp, trustedPeers) {
+        if (autoConnectEnabled && 
+            connectionState is ConnectionState.Disconnected && 
+            trustedPeers.isNotEmpty() &&
+            !DiscoveryViewModel.hasAutoConnectedThisSession
+        ) {
+            val targetFp = if (trustedPeers.size == 1) {
+                trustedPeers.keys.first()
+            } else {
+                preferredFp
+            }
+
+            if (targetFp != null) {
+                val matchingDevice = devices.find { it.fingerprint == targetFp }
+                if (matchingDevice != null && matchingDevice.fingerprint != null) {
+                    val fp = matchingDevice.fingerprint
+                    DiscoveryViewModel.hasAutoConnectedThisSession = true
+                    viewModel.markAutoConnectAttempted(fp)
+                    onDeviceSelected(matchingDevice.host, matchingDevice.port, true, fp)
+                }
+            }
         }
     }
 

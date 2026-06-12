@@ -20,6 +20,9 @@ data class NexusDevice(
     /** Display-friendly device name stripped of mDNS suffixes. */
     val displayName: String
         get() = name
+            .removePrefix("DeviceLink_")
+            .removeSuffix("._devicelink._tcp.local.")
+            .removeSuffix("._devicelink._tcp.local")
             .removeSuffix("._nexuslink._tcp.local.")
             .removeSuffix("._nexuslink._tcp.local")
             .ifBlank { host }

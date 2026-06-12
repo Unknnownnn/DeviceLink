@@ -5,8 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -28,6 +32,8 @@ class NexusForegroundService : Service() {
     lateinit var connectionManager: ConnectionManager
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    private val bluetoothReceiver = BluetoothStateReceiver()
+    private var bluetoothReceiverRegistered = false
 
     companion object {
         const val CHANNEL_ID = "nexus_connection_channel"
@@ -39,6 +45,23 @@ class NexusForegroundService : Service() {
         super.onCreate()
         createNotificationChannel()
 
+        // Register Bluetooth state receiver dynamically
+        try {
+            val btFilter = IntentFilter().apply {
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            }
+            registerReceiver(bluetoothReceiver, btFilter)
+            bluetoothReceiverRegistered = true
+        } catch (e: Exception) {
+            // Ignore if Bluetooth permission not yet granted
+        }
+
+        // Initialise the HFP manager (opens BluetoothHeadset profile proxy)
+        BluetoothHFPManager.init(applicationContext)
+
         // Observe connection state to update notification
         serviceScope.launch {
             var lastState: ConnectionState? = null
@@ -46,6 +69,10 @@ class NexusForegroundService : Service() {
                 if (state.connectionState != lastState) {
                     lastState = state.connectionState
                     updateNotification(state.connectionState)
+                    if (state.connectionState is ConnectionState.Connected) {
+                        // Auto-sync contacts whenever we get a new connection
+                        CallBridgeManager.syncContactsToPC(applicationContext)
+                    }
                     if (state.connectionState is ConnectionState.Disconnected) {
                         stopSelf()
                     }
@@ -164,6 +191,11 @@ class NexusForegroundService : Service() {
     override fun onDestroy() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.cancel(2)
+        if (bluetoothReceiverRegistered) {
+            try { unregisterReceiver(bluetoothReceiver) } catch (_: Exception) {}
+            bluetoothReceiverRegistered = false
+        }
+        BluetoothHFPManager.release()
         super.onDestroy()
     }
 }

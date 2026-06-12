@@ -43,7 +43,19 @@ async def handle_sync_contacts(
     if app:
         app.after(0, lambda: app.handle_sync_contacts(contacts))
 
+async def handle_bt_status(
+    msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol
+) -> None:
+    connected = msg.payload.get("connected", False)
+    log.info("Bluetooth connection status update: %s", connected)
+
+    from gui import DeviceLinkApp
+    app = getattr(DeviceLinkApp, "_instance", None)
+    if app:
+        app.after(0, lambda: app.handle_bt_status_change(connected))
+
 def register(registry: HandlerRegistry) -> None:
     registry.register("incoming_call", handle_incoming_call)
     registry.register("call_status", handle_call_status)
     registry.register("sync_contacts", handle_sync_contacts)
+    registry.register("bt_status", handle_bt_status)

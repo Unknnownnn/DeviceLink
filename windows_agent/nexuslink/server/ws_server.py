@@ -19,7 +19,6 @@ from nexuslink.crypto import HandshakeManager, SessionCipher
 from nexuslink.identity import IdentityManager
 from nexuslink.models import NexusMessage, MsgType
 from .handlers import registry
-from . import ping_handler
 from . import clipboard_handler
 from . import file_handler
 from . import dropzone_watcher
@@ -29,7 +28,6 @@ from . import call_handler
 
 log = logging.getLogger("nexuslink.ws_server")
 
-ping_handler.register(registry)
 clipboard_handler.register(registry)
 file_handler.register(registry)
 agent_orchestrator.register(registry)
@@ -40,8 +38,45 @@ active_peers = set()
 active_sessions = []
 _loop = None
 
+log_subscribers = set()
+
+async def handle_subscribe_logs(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
+    enable = msg.payload.get("enable", False)
+    if enable:
+        log_subscribers.add(ws)
+        log.info("Peer %s subscribed to logs", ws.remote_address)
+    else:
+        log_subscribers.discard(ws)
+        log.info("Peer %s unsubscribed from logs", ws.remote_address)
+
+registry.register("subscribe_logs", handle_subscribe_logs)
+
 def get_active_peers():
     return list(active_peers)
+
+def fetch_website_favicon(url: str, size: int = 64) -> str:
+    """
+    Downloads the favicon for a website (using Google's favicon service)
+    and returns it as a base64 encoded PNG string.
+    """
+    import urllib.request
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc or parsed.path
+        if not domain:
+            return ""
+        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz={size}"
+        req = urllib.request.Request(
+            favicon_url,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as response:
+            data = response.read()
+            return base64.b64encode(data).decode("utf-8")
+    except Exception as e:
+        log.warning("Failed to fetch favicon for %s: %s", url, e)
+        return ""
 
 def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -> str:
     """
@@ -50,6 +85,9 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
     """
     # 1. Clean and resolve target path
     target_clean = target.strip()
+
+    if item_type == "url":
+        return fetch_website_favicon(target_clean, size)
     
     if item_type == "steam":
         if "rungameid/" in target_clean:
@@ -275,6 +313,8 @@ async def send_to_all_peers(msg_type: str, payload: dict) -> None:
     msg = NexusMessage(type=msg_type, payload=payload)
     data = msg.to_bytes()
     for ws, cipher in list(active_sessions):
+        if msg_type == "pc_log" and ws not in log_subscribers:
+            continue
         try:
             frame = cipher.encrypt(data)
             await ws.send(frame)
@@ -369,6 +409,13 @@ class NexusLinkServer:
             )
             await websocket.send(cipher.encrypt(shortcuts_msg.to_bytes()))
 
+            # Request contacts from the phone
+            contacts_req = NexusMessage(
+                type="request_contacts",
+                payload={}
+            )
+            await websocket.send(cipher.encrypt(contacts_req.to_bytes()))
+
             await self._run_session(websocket, cipher)
 
         except websockets.ConnectionClosedOK:
@@ -379,6 +426,7 @@ class NexusLinkServer:
             log.exception("Unexpected error handling %s: %s", peer, exc)
         finally:
             active_peers.discard(peer)
+            log_subscribers.discard(websocket)
             for item in list(active_sessions):
                 if item[0] == websocket:
                     try:
@@ -427,12 +475,14 @@ class NexusLinkServer:
         signature_raw = self._identity.sign(transcript_to_sign)
         signature_b64 = base64.urlsafe_b64encode(signature_raw).rstrip(b"=").decode()
 
+        import socket
         hello_ack = NexusMessage(
             type=MsgType.HELLO_ACK,
             payload={
                 "x25519_public_key": hs.public_key_b64,
                 "ed25519_public_key": self._identity.public_key_b64,
                 "signature": signature_b64,
+                "device_name": socket.gethostname(),
             },
         )
         await ws.send(hello_ack.to_bytes())

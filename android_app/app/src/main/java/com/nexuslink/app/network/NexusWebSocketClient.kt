@@ -39,7 +39,7 @@ sealed class SessionEvent {
     data class MessageReceived(val type: String, val payload: JSONObject) : SessionEvent()
     data class ClipboardUpdate(val text: String) : SessionEvent()
     data class HandshakeFailed(val reason: String) : SessionEvent()
-    data class SessionEstablished(val peerEd25519PubB64: String) : SessionEvent()
+    data class SessionEstablished(val peerEd25519PubB64: String, val deviceName: String) : SessionEvent()
     object Disconnected : SessionEvent()
 }
 
@@ -258,8 +258,9 @@ class NexusWebSocketClient(
             cipher = SessionCipher(sessionKey)
             Log.i(TAG, "Session key derived ✓ — secure channel established!")
 
+            val deviceName = payload.optString("device_name", host)
             _state.value = ConnectionState.Connected(host, port)
-            scope.launch { events.send(SessionEvent.SessionEstablished(pcEd25519B64)) }
+            scope.launch { events.send(SessionEvent.SessionEstablished(pcEd25519B64, deviceName)) }
 
         } catch (e: Exception) {
             Log.e(TAG, "handleHelloAck error: ${e.message}", e)

@@ -41,6 +41,13 @@ class PeerStore @Inject constructor(
         Log.i(TAG, "Trusted peer saved: ${peer.displayName} [${peer.fingerprint.take(12)}…]")
     }
 
+    fun removePeer(fingerprint: String) {
+        val updated = _peers.value.toMutableMap().apply { remove(fingerprint) }
+        _peers.value = updated
+        saveToDisk(updated)
+        Log.i(TAG, "Trusted peer removed: $fingerprint")
+    }
+
     fun isTrusted(fingerprint: String): Boolean = _peers.value.containsKey(fingerprint)
 
     fun getPeer(fingerprint: String): TrustedPeer? = _peers.value[fingerprint]

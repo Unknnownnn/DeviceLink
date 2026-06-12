@@ -1,6 +1,10 @@
 @file:OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 package com.nexuslink.app.ui.screens
 
+import android.Manifest
+import android.bluetooth.BluetoothProfile
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,6 +54,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nexuslink.app.network.ConnectionState
 import com.nexuslink.app.ui.theme.*
@@ -67,10 +73,40 @@ fun ConnectionScreen(
     viewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val btConnected by viewModel.bluetoothConnected.collectAsState()
     val context = LocalContext.current
 
     var nlpPrompt by remember { mutableStateOf("") }
     var nlpResponseDialogText by remember { mutableStateOf<String?>(null) }
+
+    // ── Runtime permissions for phone state, calls & contacts ──────────────────────
+    val permissionsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { /* handle results silently; Bluetooth checked separately */ }
+
+    LaunchedEffect(Unit) {
+        val permsNeeded = buildList {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_PHONE_STATE)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_CONTACTS)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.CALL_PHONE)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_CALL_LOG)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (ContextCompat.checkSelfPermission(context, "android.permission.ANSWER_PHONE_CALLS")
+                    != PackageManager.PERMISSION_GRANTED) add("android.permission.ANSWER_PHONE_CALLS")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT")
+                    != PackageManager.PERMISSION_GRANTED) add("android.permission.BLUETOOTH_CONNECT")
+                if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN")
+                    != PackageManager.PERMISSION_GRANTED) add("android.permission.BLUETOOTH_SCAN")
+            }
+        }
+        if (permsNeeded.isNotEmpty()) permissionsLauncher.launch(permsNeeded.toTypedArray())
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -103,7 +139,29 @@ fun ConnectionScreen(
                     titleContentColor = OnSurface
                 ),
                 actions = {
-                    IconButton(onClick = { 
+                    // Bluetooth HFP status pill
+                    val btColor = if (btConnected) Color(0xFF10B981) else Color(0xFF64748B)
+                    val btLabel = if (btConnected) "BT" else "BT Off"
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = btColor.copy(alpha = 0.18f),
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(btColor)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(btLabel, color = btColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    IconButton(onClick = {
                         viewModel.disconnect()
                         onDisconnect()
                     }) {
@@ -147,14 +205,26 @@ fun ConnectionScreen(
                         var activeSection by remember { mutableStateOf("AI") }
                         var expandedSection by remember { mutableStateOf("AI") }
 
+                        DisposableEffect(activeSection) {
+                            if (activeSection == "Logs") {
+                                viewModel.setLogsSubscription(true)
+                            } else {
+                                viewModel.setLogsSubscription(false)
+                            }
+                            onDispose {
+                                if (activeSection == "Logs") {
+                                    viewModel.setLogsSubscription(false)
+                                }
+                            }
+                        }
                         LaunchedEffect(activeSection) {
                             if (activeSection != expandedSection) {
                                 expandedSection = ""
-                                kotlinx.coroutines.delay(200) // Perfect delay for collapse pass before expansion
+                                kotlinx.coroutines.delay(200)
                                 expandedSection = activeSection
                             }
                         }
-                        
+
                         val isExpanded = activeSection == expandedSection
                         Column(
                             modifier = Modifier
@@ -166,7 +236,7 @@ fun ConnectionScreen(
                                     "AI" -> Rose400
                                     "Apps" -> Blue400
                                     "Power" -> Emerald400
-                                    else -> Cyan400
+                                    else -> Color(0xFFF59E0B) // Amber/Yellow
                                 }
                             }
 
@@ -202,7 +272,7 @@ fun ConnectionScreen(
                                         )
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Button(
-                                            onClick = { 
+                                            onClick = {
                                                 if (nlpPrompt.isNotBlank()) {
                                                     viewModel.sendNlpCommand(nlpPrompt)
                                                     nlpPrompt = ""
@@ -260,55 +330,46 @@ fun ConnectionScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text(
-                                                text = "Secure Channel Active (ChaCha20-Poly1305)",
-                                                color = Emerald400,
+                                                text = "System Logs (ChaCha20-Poly1305)",
+                                                color = Color(0xFFF59E0B),
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 fontWeight = FontWeight.Bold
                                             )
                                             Spacer(modifier = Modifier.height(12.dp))
-                                            
+
                                             // Console-style Log Container
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .height(180.dp)
+                                                    .height(280.dp)
                                                     .background(Surface900, RoundedCornerShape(8.dp))
                                                     .border(1.dp, Surface600, RoundedCornerShape(8.dp))
                                                     .padding(12.dp)
                                             ) {
-                                                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                                                     Text(
-                                                         text = "> PINGS SENT: ${uiState.pingCount}\n> PONGS RECEIVED: ${uiState.pongCount}",
-                                                         color = Cyan300,
-                                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                         style = MaterialTheme.typography.bodySmall
-                                                     )
-                                                     if (uiState.lastPongPayload.isNotEmpty()) {
-                                                         Spacer(modifier = Modifier.height(8.dp))
-                                                         Text(
-                                                             text = "LAST RECEIVED PONG:\n${uiState.lastPongPayload}",
-                                                             color = Emerald400,
-                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                             style = MaterialTheme.typography.bodySmall
-                                                         )
-                                                     } else {
-                                                         Spacer(modifier = Modifier.height(8.dp))
-                                                         Text(
-                                                             text = "No E2E loop transactions yet. Send PING to begin.",
-                                                             color = OnSurfaceDim,
-                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                             style = MaterialTheme.typography.bodySmall
-                                                         )
-                                                     }
+                                                val scrollState = rememberScrollState()
+                                                LaunchedEffect(uiState.logs.size) {
+                                                    scrollState.animateScrollTo(scrollState.maxValue)
                                                 }
-                                            }
-                                            Spacer(modifier = Modifier.height(12.dp))
-                                            Button(
-                                                onClick = { viewModel.sendPing() },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Cyan500)
-                                            ) {
-                                                Text("Send Ping Request")
+                                                Column(modifier = Modifier.verticalScroll(scrollState)) {
+                                                    if (uiState.logs.isEmpty()) {
+                                                        Text(
+                                                            text = "No logs yet. Establish connection to begin.",
+                                                            color = OnSurfaceDim,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                            style = MaterialTheme.typography.bodySmall
+                                                        )
+                                                    } else {
+                                                        uiState.logs.forEach { log ->
+                                                            Text(
+                                                                text = log,
+                                                                color = Color(0xFFF59E0B),
+                                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                modifier = Modifier.padding(bottom = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -343,7 +404,7 @@ fun ConnectionScreen(
                                     }
                                 }
                             }
-                                
+
                             Spacer(modifier = Modifier.height(24.dp))
                             Button(
                                 onClick = { viewModel.pushClipboardToPc() },
@@ -376,7 +437,7 @@ fun ConnectionScreen(
             }
         }
     }
-    
+
     if (nlpResponseDialogText != null) {
         AlertDialog(
             onDismissRequest = { nlpResponseDialogText = null },
@@ -438,10 +499,10 @@ private fun Metric(label: String, value: String) {
 
 @Composable
 private fun DeckButton(
-    label: String, 
-    icon: androidx.compose.ui.graphics.vector.ImageVector, 
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     iconB64: String = "",
-    color: Color, 
+    color: Color,
     onClick: () -> Unit
 ) {
     val imageBitmap = remember(iconB64) {
@@ -492,14 +553,14 @@ fun ExpandableGridItem(
     content: @Composable () -> Unit
 ) {
     val transition = updateTransition(targetState = expanded, label = "expand_grid_item")
-    
+
     val topPadding by transition.animateDp(
         label = "top_padding",
         transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
     ) { state ->
         if (state) 16.dp else 8.dp
     }
-    
+
     val bottomPadding by transition.animateDp(
         label = "bottom_padding",
         transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
@@ -599,5 +660,3 @@ fun ExpandableGridItem(
         }
     }
 }
-
-
