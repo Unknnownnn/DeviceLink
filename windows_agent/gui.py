@@ -38,6 +38,33 @@ import pystray
 from PIL import Image, ImageDraw
 import os
 import re
+import json
+import urllib.request
+import subprocess
+import shutil
+import tempfile
+
+VERSION = "1.3.0"
+GITHUB_REPO = "Unknnownnn/DeviceLink"
+
+def is_newer_version(current: str, latest: str) -> bool:
+    def parse_ver(v):
+        parts = []
+        for x in v.strip().lower().lstrip('v').split('.'):
+            m = re.match(r'^(\d+)', x)
+            if m:
+                parts.append(int(m.group(1)))
+            else:
+                parts.append(0)
+        return parts
+
+    curr_parts = parse_ver(current)
+    lat_parts = parse_ver(latest)
+    max_len = max(len(curr_parts), len(lat_parts))
+    curr_parts += [0] * (max_len - len(curr_parts))
+    lat_parts += [0] * (max_len - len(lat_parts))
+    return lat_parts > curr_parts
+
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -93,6 +120,19 @@ class DeviceLinkApp(ctk.CTk):
         self.resizable(False, False)
         self.settings = SettingsManager()
         self.check_single_instance()
+
+        # Clean up old exe backup if it exists (from self-updater)
+        if getattr(sys, 'frozen', False):
+            old_exe = sys.executable + ".old"
+            if os.path.exists(old_exe):
+                try:
+                    os.remove(old_exe)
+                    print("[Updater] Cleaned up old executable backup.")
+                except Exception as e:
+                    print(f"[Updater] Failed to remove old executable: {e}")
+
+        # Check for updates silently in a background thread
+        threading.Thread(target=self.check_for_updates_silently, daemon=True).start()
 
         if "--minimized" in sys.argv:
             self.withdraw()
@@ -900,6 +940,33 @@ class DeviceLinkApp(ctk.CTk):
             command=self.toggle_startup
         )
         self.settings_minimized_switch.pack(anchor="w", padx=15, pady=(5, 15))
+
+        # Divider 2
+        divider2 = ctk.CTkFrame(form_frame, height=2, fg_color="#2D3748")
+        divider2.pack(fill="x", padx=15, pady=10)
+        
+        # Updates Section
+        ctk.CTkLabel(
+            form_frame, 
+            text="App Updates:", 
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(0, 2))
+        
+        self.settings_update_lbl = ctk.CTkLabel(
+            form_frame, 
+            text=f"Current Version: v{VERSION}", 
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        self.settings_update_lbl.pack(anchor="w", padx=15, pady=(0, 5))
+        
+        self.settings_check_update_btn = ctk.CTkButton(
+            form_frame, 
+            text="Check for Updates", 
+            width=150, 
+            command=self.check_for_updates_manually
+        )
+        self.settings_check_update_btn.pack(anchor="w", padx=15, pady=(5, 15))
         
         # Buttons Row
         btn_row = ctk.CTkFrame(self.settings_win, fg_color="transparent")
@@ -1596,6 +1663,271 @@ class DeviceLinkApp(ctk.CTk):
             else:
                 self.bt_status_dot.configure(text_color="#EF4444") # Red
                 self.bt_status_text.configure(text="Bluetooth HFP: Disconnected")
+
+
+    def fetch_latest_release(self):
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'DeviceLink-Updater/1.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as response:
+                if response.status == 200:
+                    return json.loads(response.read().decode('utf-8'))
+        except Exception as e:
+            print(f"[Updater] Error fetching latest release: {e}")
+        return None
+
+    def check_for_updates_silently(self):
+        release = self.fetch_latest_release()
+        if not release:
+            return
+        
+        latest_tag = release.get("tag_name", "")
+        if not latest_tag:
+            return
+            
+        if is_newer_version(VERSION, latest_tag):
+            assets = release.get("assets", [])
+            download_url = None
+            for asset in assets:
+                name = asset.get("name", "")
+                if name.lower() == "devicelink.exe":
+                    download_url = asset.get("browser_download_url")
+                    break
+            
+            if download_url:
+                self.after(0, lambda: self.show_update_available_dialog(latest_tag, download_url, release.get("body", "")))
+
+    def check_for_updates_manually(self):
+        if not hasattr(self, "settings_check_update_btn") or not hasattr(self, "settings_update_lbl"):
+            return
+        self.settings_check_update_btn.configure(state="disabled", text="Checking...")
+        self.settings_update_lbl.configure(text="Checking for updates...")
+        
+        def worker():
+            release = self.fetch_latest_release()
+            
+            def update_ui():
+                self.settings_check_update_btn.configure(state="normal", text="Check for Updates")
+                if not release:
+                    self.settings_update_lbl.configure(text=f"Current Version: v{VERSION}\nFailed to contact update server.")
+                    from tkinter import messagebox
+                    messagebox.showerror("Update Error", "Failed to check for updates. Please check your internet connection.")
+                    return
+                
+                latest_tag = release.get("tag_name", "")
+                if not latest_tag:
+                    self.settings_update_lbl.configure(text=f"Current Version: v{VERSION}\nInvalid server response.")
+                    return
+                
+                if is_newer_version(VERSION, latest_tag):
+                    assets = release.get("assets", [])
+                    download_url = None
+                    for asset in assets:
+                        name = asset.get("name", "")
+                        if name.lower() == "devicelink.exe":
+                            download_url = asset.get("browser_download_url")
+                            break
+                    
+                    if download_url:
+                        self.settings_update_lbl.configure(text=f"Update available: {latest_tag}")
+                        self.show_update_available_dialog(latest_tag, download_url, release.get("body", ""))
+                    else:
+                        self.settings_update_lbl.configure(text=f"Current Version: v{VERSION}\nNo compatible asset found in release.")
+                else:
+                    self.settings_update_lbl.configure(text=f"Current Version: v{VERSION} (Up to date)")
+                    from tkinter import messagebox
+                    messagebox.showinfo("Up to Date", f"You are running the latest version (v{VERSION}).")
+            
+            self.after(0, update_ui)
+            
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_update_available_dialog(self, latest_tag, download_url, release_notes):
+        update_win = ctk.CTkToplevel(self)
+        update_win.title("Update Available")
+        update_win.geometry("450x320")
+        update_win.resizable(False, False)
+        update_win.attributes("-topmost", True)
+        update_win.transient(self)
+        
+        # Center it
+        screen_width = update_win.winfo_screenwidth()
+        screen_height = update_win.winfo_screenheight()
+        x = (screen_width // 2) - 225
+        y = (screen_height // 2) - 160
+        update_win.geometry(f"+{x}+{y}")
+        
+        title = ctk.CTkLabel(
+            update_win,
+            text=f"New Version Available: {latest_tag}",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#38BDF8"
+        )
+        title.pack(pady=(20, 10))
+        
+        desc = ctk.CTkLabel(
+            update_win,
+            text=f"A new version of DeviceLink is available (you have v{VERSION}).\nWould you like to download and install it now?",
+            font=ctk.CTkFont(size=12),
+            text_color="#F8FAFC",
+            justify="center"
+        )
+        desc.pack(padx=20, pady=(0, 15))
+        
+        notes_frame = ctk.CTkScrollableFrame(update_win, height=120, width=400)
+        notes_frame.pack(padx=20, pady=(0, 20))
+        
+        notes_title = ctk.CTkLabel(
+            notes_frame,
+            text="Release Notes:",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="gray",
+            anchor="w"
+        )
+        notes_title.pack(fill="x", padx=5)
+        
+        notes_text = ctk.CTkLabel(
+            notes_frame,
+            text=release_notes if release_notes else "No release notes provided.",
+            font=ctk.CTkFont(size=11),
+            text_color="#CBD5E1",
+            justify="left",
+            wraplength=360,
+            anchor="w"
+        )
+        notes_text.pack(fill="x", padx=5, pady=5)
+        
+        btn_frame = ctk.CTkFrame(update_win, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+        
+        later_btn = ctk.CTkButton(
+            btn_frame,
+            text="Later",
+            width=100,
+            fg_color="gray",
+            hover_color="#555555",
+            command=update_win.destroy
+        )
+        later_btn.pack(side="left", padx=(0, 10))
+        
+        def do_update():
+            update_win.destroy()
+            self.show_download_progress_dialog(download_url, latest_tag)
+            
+        update_btn = ctk.CTkButton(
+            btn_frame,
+            text="Download & Install",
+            width=180,
+            command=do_update
+        )
+        update_btn.pack(side="right", fill="x", expand=True)
+
+    def show_download_progress_dialog(self, download_url, latest_tag):
+        progress_win = ctk.CTkToplevel(self)
+        progress_win.title("Downloading Update")
+        progress_win.geometry("380x160")
+        progress_win.resizable(False, False)
+        progress_win.attributes("-topmost", True)
+        progress_win.transient(self)
+        
+        screen_width = progress_win.winfo_screenwidth()
+        screen_height = progress_win.winfo_screenheight()
+        x = (screen_width // 2) - 190
+        y = (screen_height // 2) - 80
+        progress_win.geometry(f"+{x}+{y}")
+        
+        lbl = ctk.CTkLabel(
+            progress_win,
+            text=f"Downloading DeviceLink update to {latest_tag}...",
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
+        lbl.pack(pady=(20, 10))
+        
+        progress_bar = ctk.CTkProgressBar(progress_win, width=320)
+        progress_bar.set(0)
+        progress_bar.pack(pady=5)
+        
+        progress_lbl = ctk.CTkLabel(
+            progress_win,
+            text="0%",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        progress_lbl.pack(pady=(0, 15))
+        
+        self.start_download_and_install(download_url, latest_tag, progress_win, progress_bar, progress_lbl)
+
+    def start_download_and_install(self, download_url, version_str, progress_win, progress_bar, progress_lbl):
+        def worker():
+            try:
+                # 1. Download to a temp file
+                req = urllib.request.Request(download_url, headers={'User-Agent': 'DeviceLink-Updater/1.0'})
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".exe")
+                os.close(temp_fd)
+                
+                with urllib.request.urlopen(req, timeout=30.0) as response:
+                    total_size = int(response.info().get('Content-Length', 0))
+                    downloaded = 0
+                    block_size = 1024 * 64
+                    
+                    with open(temp_path, 'wb') as f:
+                        while True:
+                            buffer = response.read(block_size)
+                            if not buffer:
+                                break
+                            f.write(buffer)
+                            downloaded += len(buffer)
+                            if total_size > 0:
+                                percent = downloaded / total_size
+                                self.after(0, lambda p=percent: [
+                                    progress_bar.set(p), 
+                                    progress_lbl.configure(text=f"{int(p*100)}% ({downloaded // 1024} KB / {total_size // 1024} KB)")
+                                ])
+                
+                # 2. Swap executables
+                if getattr(sys, 'frozen', False):
+                    current_exe = sys.executable
+                    old_exe = current_exe + ".old"
+                    
+                    if os.path.exists(old_exe):
+                        try:
+                            os.remove(old_exe)
+                        except Exception:
+                            pass
+                    
+                    os.rename(current_exe, old_exe)
+                    shutil.move(temp_path, current_exe)
+                    self.after(0, progress_win.destroy)
+                    self.after(0, lambda: self.prompt_update_success(current_exe))
+                else:
+                    # Dev mode simulation
+                    dev_dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DeviceLink_new.exe")
+                    shutil.move(temp_path, dev_dest)
+                    self.after(0, progress_win.destroy)
+                    self.after(0, lambda: self.show_dev_mode_info(dev_dest))
+                    
+            except Exception as e:
+                self.after(0, progress_win.destroy)
+                self.after(0, lambda err=str(e): self.show_update_error(err))
+                
+        threading.Thread(target=worker, daemon=True).start()
+
+    def prompt_update_success(self, current_exe):
+        from tkinter import messagebox
+        messagebox.showinfo("Update Complete", "DeviceLink updated successfully! The application will now restart.")
+        try:
+            subprocess.Popen([current_exe])
+        except Exception as e:
+            print(f"[Updater] Failed to restart: {e}")
+        os._exit(0)
+
+    def show_dev_mode_info(self, dev_dest):
+        from tkinter import messagebox
+        messagebox.showinfo("Simulation Complete", f"Running in development mode (not frozen). The new binary was saved to:\n\n{dev_dest}")
+
+    def show_update_error(self, err_msg):
+        from tkinter import messagebox
+        messagebox.showerror("Update Failed", f"An error occurred during the update:\n\n{err_msg}")
 
 
 if __name__ == "__main__":
