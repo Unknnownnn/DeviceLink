@@ -3,6 +3,7 @@
 # Android App
 android_app/build/
 android_app/app/build/
+android_app/app/google-services.json
 android_app/.gradle/
 android_app/.idea/
 android_app/local.properties
@@ -22,7 +23,9 @@ windows_agent/*.png
 windows_agent/*.key
 windows_agent/build/
 windows_agent/dist/
-windows_agent/*.spec
+windows_agent/*.log
+windows_agent/*.old
+windows_agent/devlinkupdate.exe
 
 # General OS Files
 .DS_Store

@@ -23,7 +23,7 @@ DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC an
 ## Features
 
 - **Bidirectional clipboard sync** - Copy on one device, paste on the other. Windows detection uses a native Win32 event hook (`AddClipboardFormatListener`) for zero idle CPU cost.
-- **File drop zone** - Drop files into a watched folder on the PC to send them to the Android device over the encrypted channel.
+- **Direct file sharing** - Send files directly from the Windows dashboard or Android app. The transfer runs over direct, secure local channels (WebSocket or UDP) with real-time progress bars.
 - **Mobile deck shortcuts** - Define custom shortcut buttons on the Android app that trigger actions on the PC.
 - **AI agent** - Send natural-language commands from the phone. The agent can search for and launch applications, open URLs, and interact with the PC without requiring every action to be pre-approved.
 - **System tray integration** - The Windows agent runs minimised to the tray with no persistent console window.

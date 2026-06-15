@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.nexuslink.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,19 @@ class GitHubUpdater(
     private val apkFileName: String = "app-debug.apk",
     private val client: OkHttpClient = OkHttpClient()
 ) {
+    init {
+        try {
+            val file = File(context.cacheDir, "update.apk")
+            if (file.exists()) {
+                if (file.delete()) {
+                    Log.i("GitHubUpdater", "Cleaned up leftover update APK from cache.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("GitHubUpdater", "Failed to delete leftover APK: ${e.message}")
+        }
+    }
+
     companion object {
         var hasCheckedThisSession = false
         var hasDismissedPopupThisSession = false

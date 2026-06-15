@@ -10,8 +10,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
@@ -55,6 +59,7 @@ fun DeviceListScreen(
     val autoConnectEnabled by viewModel.preferencesManager.autoConnectEnabled.collectAsState()
     val preferredFp by viewModel.preferencesManager.preferredAutoConnectFingerprint.collectAsState()
     val trustedPeers by viewModel.trustedPeers.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
 
     val context = LocalContext.current
     val updater = remember { GitHubUpdater(context) }
@@ -82,7 +87,7 @@ fun DeviceListScreen(
             }
 
             if (targetFp != null) {
-                val matchingDevice = devices.find { it.fingerprint == targetFp }
+                val matchingDevice = devices.find { it.fingerprint == targetFp && it.host != "cloud" }
                 if (matchingDevice != null && matchingDevice.fingerprint != null) {
                     val fp = matchingDevice.fingerprint
                     DiscoveryViewModel.hasAutoConnectedThisSession = true
@@ -234,7 +239,9 @@ fun DeviceListScreen(
         },
         containerColor = Surface900,
     ) { padding ->
-        Column(
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { viewModel.refresh() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -308,9 +315,9 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = Icons.Default.Computer,
+                    imageVector = if (device.host == "cloud") Icons.Default.Cloud else Icons.Default.Computer,
                     contentDescription = null,
-                    tint = Blue400,
+                    tint = if (device.host == "cloud") Cyan400 else Blue400,
                     modifier = Modifier.size(24.dp),
                 )
             }
@@ -342,7 +349,24 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
             }
 
             // Clean modern badges (no generic templates)
-            if (device.isPaired) {
+            if (device.host == "cloud") {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Cloud,
+                        contentDescription = "Cloud Relay",
+                        tint = Cyan400,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "CLOUD",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Cyan400,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
+                    )
+                }
+            } else if (device.isPaired) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = Icons.Default.Shield,
@@ -374,7 +398,9 @@ private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
 @Composable
 private fun EmptyDiscoveryState() {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
         contentAlignment = Alignment.Center,
     ) {
         Column(

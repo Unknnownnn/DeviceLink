@@ -24,12 +24,24 @@ original_stderr = sys.stderr
 sys.stdout = StdoutRedirector(log_queue)
 sys.stderr = StdoutRedirector(log_queue)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stderr
-)
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config import DEVICELINK_DIR
+log_file_path = os.path.join(DEVICELINK_DIR, "agent.log")
+
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S")
+
+fh = logging.FileHandler(log_file_path, encoding='utf-8')
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+logging.root.addHandler(fh)
+
+sh = logging.StreamHandler(sys.stderr)
+sh.setLevel(logging.INFO)
+sh.setFormatter(formatter)
+logging.root.addHandler(sh)
+
+logging.root.setLevel(logging.INFO)
 
 import threading
 import asyncio
@@ -44,7 +56,18 @@ import subprocess
 import shutil
 import tempfile
 
-VERSION = "1.3.0"
+if getattr(sys, 'frozen', False):
+    import time
+    update_exe = os.path.join(os.path.dirname(sys.executable), "devlinkupdate.exe")
+    if os.path.exists(update_exe):
+        for _ in range(10):
+            try:
+                os.remove(update_exe)
+                break
+            except Exception:
+                time.sleep(1)
+
+VERSION = "1.4.0"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -111,6 +134,12 @@ def create_tray_image():
     return image
 
 
+def set_file_progress(filename, bytes_sent, total_bytes):
+    app = getattr(DeviceLinkApp, "_instance", None)
+    if app:
+        app.after(0, lambda: app.show_file_progress(filename, bytes_sent, total_bytes))
+
+
 class DeviceLinkApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -121,15 +150,14 @@ class DeviceLinkApp(ctk.CTk):
         self.settings = SettingsManager()
         self.check_single_instance()
 
-        # Clean up old exe backup if it exists (from self-updater)
+        # Clean up old exe backups if they exist (fallback)
         if getattr(sys, 'frozen', False):
             old_exe = sys.executable + ".old"
             if os.path.exists(old_exe):
                 try:
                     os.remove(old_exe)
-                    print("[Updater] Cleaned up old executable backup.")
-                except Exception as e:
-                    print(f"[Updater] Failed to remove old executable: {e}")
+                except Exception:
+                    pass
 
         # Check for updates silently in a background thread
         threading.Thread(target=self.check_for_updates_silently, daemon=True).start()
@@ -236,7 +264,8 @@ class DeviceLinkApp(ctk.CTk):
             button_row, 
             text="Send File to Device", 
             width=160, 
-            command=self.send_file_to_device
+            command=self.send_file_to_device,
+            state="disabled"
         )
         self.send_file_btn.pack(side="left", padx=(0, 10))
 
@@ -247,6 +276,26 @@ class DeviceLinkApp(ctk.CTk):
             command=self.show_logs_window
         )
         self.show_logs_btn.pack(side="left")
+
+        # File Transfer Progress Bar
+        self.progress_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
+        # Hidden by default
+
+        self.progress_label = ctk.CTkLabel(
+            self.progress_frame,
+            text="Sending file...",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.progress_label.pack(anchor="w", padx=10, pady=(15, 2))
+
+        self.progress_bar = ctk.CTkProgressBar(
+            self.progress_frame,
+            width=500,
+            height=12,
+            corner_radius=4
+        )
+        self.progress_bar.set(0.0)
+        self.progress_bar.pack(fill="x", padx=10, pady=(2, 5))
 
 
     def show_qr_code(self):
@@ -317,24 +366,97 @@ class DeviceLinkApp(ctk.CTk):
         self.log_textbox.configure(state="disabled")
 
     def send_file_to_device(self):
-        import shutil
-        from nexuslink.server.dropzone_watcher import get_uploads_dir
-        
         filepath = ctk.filedialog.askopenfilename(
             title="Select File to Send to Device"
         )
-        if filepath:
-            try:
-                uploads_dir = get_uploads_dir()
-                filename = os.path.basename(filepath)
-                dest_path = uploads_dir / filename
-                
-                # Copy file to dropzone uploads directory
-                shutil.copy(filepath, str(dest_path))
-                
-                print(f"[Console] Staged '{filename}' in DropZone. Sending...")
-            except Exception as e:
-                print(f"[Console] Error staging file: {e}")
+        if filepath and os.path.exists(filepath):
+            filename = os.path.basename(filepath)
+            # Start background thread to send the file directly
+            threading.Thread(target=self._send_file_worker, args=(filepath, filename), daemon=True).start()
+
+    def _send_file_worker(self, filepath, filename):
+        import base64
+        import uuid
+        from nexuslink.server.ws_server import send_message_to_all_peers_sync
+        
+        try:
+            file_size = os.path.getsize(filepath)
+            file_id = str(uuid.uuid4())
+            
+            print(f"[Console] Sending '{filename}' ({file_size} bytes) directly to phone...")
+            
+            # Update progress UI to start
+            self.after(0, lambda: self.show_file_progress(filename, 0, file_size))
+            
+            # Send file_transfer_start
+            send_message_to_all_peers_sync(
+                "file_transfer_start", 
+                {"file_id": file_id, "file_name": filename, "file_size": file_size}
+            )
+            
+            CHUNK_SIZE = 64 * 1024  # 64 KB
+            bytes_sent = 0
+            seq = 0
+            
+            with open(filepath, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    
+                    b64_data = base64.b64encode(chunk).decode("utf-8")
+                    send_message_to_all_peers_sync(
+                        "file_chunk",
+                        {"file_id": file_id, "sequence": seq, "data": b64_data}
+                    )
+                    
+                    seq += 1
+                    bytes_sent += len(chunk)
+                    
+                    self._update_progress_from_thread(filename, bytes_sent, file_size)
+                    
+            # Send file_transfer_complete
+            send_message_to_all_peers_sync(
+                "file_transfer_complete",
+                {"file_id": file_id}
+            )
+            
+            print(f"[Console] Successfully sent '{filename}' to phone.")
+            self._update_progress_from_thread(filename, file_size, file_size)
+            
+        except Exception as e:
+            print(f"[Console] Error sending file directly: {e}")
+            self.after(0, lambda: self.progress_label.configure(text=f"Error sending '{filename}'"))
+            self.after(3000, self.hide_file_progress)
+
+    def _update_progress_from_thread(self, filename, bytes_sent, file_size):
+        self.after(0, lambda: self.show_file_progress(filename, bytes_sent, file_size))
+
+    def show_file_progress(self, filename, bytes_sent, total_bytes):
+        try:
+            if not self.progress_frame.winfo_viewable():
+                self.progress_frame.pack(fill="x", padx=10, pady=(10, 0))
+            
+            pct = float(bytes_sent) / float(total_bytes) if total_bytes > 0 else 0.0
+            pct_text = f"Sending '{filename}'... {int(pct * 100)}%"
+            
+            self.progress_label.configure(text=pct_text)
+            self.progress_bar.set(pct)
+            
+            if bytes_sent >= total_bytes:
+                self.progress_label.configure(text=f"Sent '{filename}' successfully!")
+                self.progress_bar.set(1.0)
+                # Hide the progress frame after 3 seconds
+                self.after(3000, self.hide_file_progress)
+        except Exception as e:
+            print(f"[Console] Error updating file progress: {e}")
+
+    def hide_file_progress(self):
+        try:
+            self.progress_frame.pack_forget()
+            self.progress_bar.set(0.0)
+        except Exception:
+            pass
 
     def check_logs_loop(self):
         msgs = []
@@ -357,19 +479,52 @@ class DeviceLinkApp(ctk.CTk):
 
     def update_connection_status_loop(self):
         try:
-            from nexuslink.server.ws_server import get_active_peers
+            from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active
+            from nexuslink.server.udp_server import get_active_udp_peer
             peers = get_active_peers()
+            udp_peer = get_active_udp_peer()
             if peers:
                 peer_str = ", ".join(f"{p[0]}:{p[1]}" for p in peers)
                 self.status_dot.configure(text_color="#10B981") # Green
                 self.status_text.configure(text=f"Connected to {peer_str}")
+                self.set_phone_tab_state("normal")
+                self.send_file_btn.configure(state="normal")
+            elif udp_peer:
+                self.status_dot.configure(text_color="#10B981") # Green
+                self.status_text.configure(text=f"Connected via STUN UDP: {udp_peer[0]}:{udp_peer[1]}")
+                self.set_phone_tab_state("normal")
+                self.send_file_btn.configure(state="normal")
             else:
-                self.status_dot.configure(text_color="#F59E0B") # Yellow/Orange
-                self.status_text.configure(text="Waiting for Android connection...")
+                self.send_file_btn.configure(state="disabled")
+                if get_cloud_relay_active():
+                    self.status_dot.configure(text_color="#06B6D4") # Cyan
+                    self.status_text.configure(text="Connected via Cloud Relay")
+                    self.set_phone_tab_state("disabled")
+                else:
+                    self.status_dot.configure(text_color="#F59E0B") # Yellow/Orange
+                    self.status_text.configure(text="Waiting for Android connection...")
+                    self.set_phone_tab_state("disabled")
         except Exception:
             pass
-            
+
         self.after(3000, self.update_connection_status_loop)
+
+    def handle_cloud_relay_disconnect(self):
+        self.status_dot.configure(text_color="#F59E0B")
+        self.status_text.configure(text="Waiting for Android connection...")
+        self.set_phone_tab_state("disabled")
+        self.send_file_btn.configure(state="disabled")
+
+    def set_phone_tab_state(self, state):
+        try:
+            if state == "disabled":
+                if self.tabview.get() == "Phone Calls":
+                    self.tabview.set("Status")
+                self.tabview._segmented_button._buttons_dict["Phone Calls"].configure(state="disabled")
+            else:
+                self.tabview._segmented_button._buttons_dict["Phone Calls"].configure(state="normal")
+        except Exception:
+            pass
 
     def append_logs_to_ui(self, msgs):
         cleaned_msgs = []
@@ -732,9 +887,11 @@ class DeviceLinkApp(ctk.CTk):
                 client.connect(("127.0.0.1", 47299))
                 client.sendall(b"show")
                 client.close()
+                sys.exit(0)
             except Exception:
+                # The port is likely stuck in TIME_WAIT from a crash,
+                # so the other instance is dead. Continue launching.
                 pass
-            sys.exit(0)
 
     def listen_for_wake_up(self):
         while True:
@@ -1745,7 +1902,7 @@ class DeviceLinkApp(ctk.CTk):
     def show_update_available_dialog(self, latest_tag, download_url, release_notes):
         update_win = ctk.CTkToplevel(self)
         update_win.title("Update Available")
-        update_win.geometry("450x320")
+        update_win.geometry("450x400")
         update_win.resizable(False, False)
         update_win.attributes("-topmost", True)
         update_win.transient(self)
@@ -1754,7 +1911,7 @@ class DeviceLinkApp(ctk.CTk):
         screen_width = update_win.winfo_screenwidth()
         screen_height = update_win.winfo_screenheight()
         x = (screen_width // 2) - 225
-        y = (screen_height // 2) - 160
+        y = (screen_height // 2) - 200
         update_win.geometry(f"+{x}+{y}")
         
         title = ctk.CTkLabel(
@@ -1860,17 +2017,30 @@ class DeviceLinkApp(ctk.CTk):
     def start_download_and_install(self, download_url, version_str, progress_win, progress_bar, progress_lbl):
         def worker():
             try:
-                # 1. Download to a temp file
+                target_path = None
+                if getattr(sys, 'frozen', False):
+                    current_exe = sys.executable
+                    update_exe = os.path.join(os.path.dirname(current_exe), "devlinkupdate.exe")
+                    if os.path.exists(update_exe):
+                        try:
+                            os.remove(update_exe)
+                        except Exception:
+                            pass
+                    try:
+                        os.rename(current_exe, update_exe)
+                    except Exception:
+                        pass
+                    target_path = current_exe
+                else:
+                    target_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DeviceLink_new.exe")
+
                 req = urllib.request.Request(download_url, headers={'User-Agent': 'DeviceLink-Updater/1.0'})
-                temp_fd, temp_path = tempfile.mkstemp(suffix=".exe")
-                os.close(temp_fd)
-                
                 with urllib.request.urlopen(req, timeout=30.0) as response:
                     total_size = int(response.info().get('Content-Length', 0))
                     downloaded = 0
                     block_size = 1024 * 64
                     
-                    with open(temp_path, 'wb') as f:
+                    with open(target_path, 'wb') as f:
                         while True:
                             buffer = response.read(block_size)
                             if not buffer:
@@ -1884,27 +2054,12 @@ class DeviceLinkApp(ctk.CTk):
                                     progress_lbl.configure(text=f"{int(p*100)}% ({downloaded // 1024} KB / {total_size // 1024} KB)")
                                 ])
                 
-                # 2. Swap executables
                 if getattr(sys, 'frozen', False):
-                    current_exe = sys.executable
-                    old_exe = current_exe + ".old"
-                    
-                    if os.path.exists(old_exe):
-                        try:
-                            os.remove(old_exe)
-                        except Exception:
-                            pass
-                    
-                    os.rename(current_exe, old_exe)
-                    shutil.move(temp_path, current_exe)
                     self.after(0, progress_win.destroy)
-                    self.after(0, lambda: self.prompt_update_success(current_exe))
+                    self.after(0, lambda: self.prompt_update_success(target_path))
                 else:
-                    # Dev mode simulation
-                    dev_dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DeviceLink_new.exe")
-                    shutil.move(temp_path, dev_dest)
                     self.after(0, progress_win.destroy)
-                    self.after(0, lambda: self.show_dev_mode_info(dev_dest))
+                    self.after(0, lambda: self.show_dev_mode_info(target_path))
                     
             except Exception as e:
                 self.after(0, progress_win.destroy)
@@ -1913,12 +2068,28 @@ class DeviceLinkApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def prompt_update_success(self, current_exe):
-        from tkinter import messagebox
-        messagebox.showinfo("Update Complete", "DeviceLink updated successfully! The application will now restart.")
         try:
-            subprocess.Popen([current_exe])
+            update_exe = os.path.join(os.path.dirname(current_exe), "devlinkupdate.exe")
+            vbs_path = os.path.join(tempfile.gettempdir(), "devicelink_update.vbs")
+            with open(vbs_path, "w") as f:
+                f.write('WScript.Sleep 2000\n')
+                f.write('Set objShell = CreateObject("WScript.Shell")\n')
+                f.write('objShell.Run "explorer.exe """ & WScript.Arguments(0) & """", 0, False\n')
+                f.write('WScript.Sleep 3000\n')
+                f.write('Set objFSO = CreateObject("Scripting.FileSystemObject")\n')
+                f.write('On Error Resume Next\n')
+                f.write('objFSO.DeleteFile WScript.Arguments(1), True\n')
+                f.write('objFSO.DeleteFile WScript.ScriptFullName, True\n')
+
+            subprocess.Popen(["wscript.exe", vbs_path, current_exe, update_exe], creationflags=0x08000000)
         except Exception as e:
             print(f"[Updater] Failed to restart: {e}")
+        
+        if hasattr(self, 'tray_icon') and self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
         os._exit(0)
 
     def show_dev_mode_info(self, dev_dest):

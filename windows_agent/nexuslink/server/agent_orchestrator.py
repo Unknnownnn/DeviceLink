@@ -251,47 +251,39 @@ class SanitizationSandbox:
                 return "Error: search name cannot be empty"
 
             matches = []
-
-            # Target directories to scan
             search_roots = []
             
-            # Desktop paths
             desktop_path = Path.home() / "Desktop"
             if desktop_path.exists():
-                search_roots.append((desktop_path, False)) # False = non-recursive
+                search_roots.append((desktop_path, False)) 
             
             public_desktop = Path("C:/Users/Public/Desktop")
             if public_desktop.exists():
                 search_roots.append((public_desktop, False))
                 
-            # Start Menu paths
             start_menu_user = Path(os.path.expandvars("%APPDATA%")) / "Microsoft/Windows/Start Menu/Programs"
             if start_menu_user.exists():
-                search_roots.append((start_menu_user, True)) # True = recursive
+                search_roots.append((start_menu_user, True))
                 
             start_menu_common = Path(os.path.expandvars("%ProgramData%")) / "Microsoft/Windows/Start Menu/Programs"
             if start_menu_common.exists():
                 search_roots.append((start_menu_common, True))
 
-            # Custom Allowed Launch Directories
             custom_dirs = self.settings.settings.get("allowed_launch_dirs", [])
             for c_dir in custom_dirs:
                 c_path = Path(c_dir)
                 if c_path.exists():
                     search_roots.append((c_path, True))
 
-            # Perform search
             for root, recursive in search_roots:
                 if len(matches) >= 15:
                     break
                 
                 try:
                     if recursive:
-                        # Recursively scan directory
                         for dirpath, _, filenames in os.walk(root):
                             if len(matches) >= 15:
                                 break
-                            # Skip hidden/system/recycle-bin folders
                             parts_lower = [p.lower() for p in Path(dirpath).parts]
                             if any(p.startswith('.') or p in ('$recycle.bin', 'system volume information') for p in parts_lower):
                                 continue
@@ -299,12 +291,10 @@ class SanitizationSandbox:
                             for f in filenames:
                                 f_lower = f.lower()
                                 if f_lower.endswith((".exe", ".lnk", ".url")):
-                                    # Match all words in query
                                     if all(word in f_lower for word in query_words):
                                         full_path = os.path.join(dirpath, f)
                                         matches.append(full_path)
                     else:
-                        # Flat scan of the folder
                         for item in root.iterdir():
                             if len(matches) >= 15:
                                 break
@@ -334,7 +324,6 @@ class SanitizationSandbox:
             if not target:
                 return "Error: target cannot be empty"
 
-            # If it looks like a URL, extract domain name to match window title
             if target.startswith(("http://", "https://")):
                 from urllib.parse import urlparse
                 try:
@@ -350,12 +339,9 @@ class SanitizationSandbox:
                 except Exception:
                     pass
 
-            # 1. Try to find and close windows matching the title via ctypes WM_CLOSE
             closed_count = self._close_windows_by_title(target)
             if closed_count > 0:
                 return f"Successfully closed {closed_count} window(s) matching '{target}' gracefully."
-
-            # 2. Fallback: try taskkill /IM
             common_mappings = {
                 "word": "winword.exe",
                 "excel": "excel.exe",
@@ -519,7 +505,6 @@ class OpenRouterAgent:
         self.sandbox = SanitizationSandbox()
 
     async def execute_command(self, prompt: str) -> str:
-        # Load settings dynamically to support runtime config updates
         settings = SettingsManager()
         api_key = settings.get_openrouter_api_key()
         if not api_key:
@@ -570,7 +555,9 @@ class OpenRouterAgent:
                         if response.status != 200:
                             text = await response.text()
                             log.error("OpenRouter API error: %s", text)
-                            return f"AI API Error: HTTP {response.status}"
+                            if response.status == 429:
+                                return f"AI API Error: HTTP 429 from OpenRouter (rate limited). {text[:500]}"
+                            return f"AI API Error: HTTP {response.status}. {text[:500]}"
                         
                         data = await response.json()
                         choices = data.get("choices", [])
@@ -656,7 +643,17 @@ async def handle_nlp_command(
         type="nlp_response",
         payload={"result": result_text, "prompt": prompt}
     )
-    await ws.send(cipher.encrypt(response_msg.to_bytes()))
+    if ws is not None and cipher is not None:
+        await ws.send(cipher.encrypt(response_msg.to_bytes()))
+        return
+
+    from nexuslink.server import ws_server
+    relay = getattr(ws_server, "_firebase_relay", None)
+    if relay is not None:
+        relay.send_to_phone(response_msg.to_bytes())
+        log.info("Sent NLP response via Firebase relay")
+    else:
+        log.warning("No transport available for NLP response")
 
 
 def register(registry: HandlerRegistry) -> None:

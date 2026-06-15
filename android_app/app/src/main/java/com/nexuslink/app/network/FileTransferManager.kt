@@ -1,5 +1,4 @@
 package com.nexuslink.app.network
-
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -12,6 +11,8 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import android.util.Base64
 import android.util.Log
+import android.content.Intent
+import android.app.PendingIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,10 +35,12 @@ class FileTransferManager @Inject constructor(
 
     private data class TransferState(
         val stream: OutputStream,
+        val fileUri: Uri,
         val fileName: String,
         val fileSize: Long,
         var bytesReceived: Long,
-        val notificationId: Int
+        val notificationId: Int,
+        var lastReportedPercent: Int = -1
     )
 
     private val activeReceives = mutableMapOf<String, TransferState>()
@@ -85,7 +88,7 @@ class FileTransferManager @Inject constructor(
             val outputStream = resolver.openOutputStream(uri)
             if (outputStream != null) {
                 val notifId = fileId.hashCode()
-                activeReceives[fileId] = TransferState(outputStream, fileName, fileSize, 0L, notifId)
+                activeReceives[fileId] = TransferState(outputStream, uri, fileName, fileSize, 0L, notifId, -1)
                 
                 val notification = NotificationCompat.Builder(context, "nexus_file_transfer")
                     .setContentTitle("Receiving $fileName")
@@ -115,8 +118,9 @@ class FileTransferManager @Inject constructor(
             state.bytesReceived += bytes.size
             if (state.fileSize > 0) {
                 val percent = ((state.bytesReceived.toDouble() / state.fileSize.toDouble()) * 100).toInt()
-                // Update notification every few percent to avoid spamming
-                if (percent % 5 == 0) {
+                // Update notification only when the percentage changes, it is a multiple of 5, and not 100%
+                if (percent < 100 && percent != state.lastReportedPercent && percent % 5 == 0) {
+                    state.lastReportedPercent = percent
                     val notification = NotificationCompat.Builder(context, "nexus_file_transfer")
                         .setContentTitle("Receiving ${state.fileName}")
                         .setContentText("$percent%")
@@ -139,18 +143,35 @@ class FileTransferManager @Inject constructor(
             try {
                 state.stream.close()
                 Log.i(TAG, "File transfer complete: $fileId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to close stream: ${e.message}")
+            }
+
+            try {
+                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(state.fileUri, context.contentResolver.getType(state.fileUri) ?: "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
                 
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    state.notificationId,
+                    viewIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
                 val notification = NotificationCompat.Builder(context, "nexus_file_transfer")
-                    .setContentTitle("File Received")
+                    .setContentTitle("File Received Successfully")
                     .setContentText(state.fileName)
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setAutoCancel(true)
                     .setOngoing(false)
                     .setProgress(0, 0, false)
+                    .setContentIntent(pendingIntent)
                     .build()
                 notificationManager.notify(state.notificationId, notification)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to close stream: ${e.message}")
+                Log.e(TAG, "Failed to create completion notification: ${e.message}")
             }
         }
     }

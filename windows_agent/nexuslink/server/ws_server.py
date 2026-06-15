@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import ctypes
+import time
 from io import BytesIO
 from typing import Optional
 
@@ -21,10 +22,12 @@ from nexuslink.models import NexusMessage, MsgType
 from .handlers import registry
 from . import clipboard_handler
 from . import file_handler
-from . import dropzone_watcher
 from . import agent_orchestrator
 from . import power_handler
 from . import call_handler
+from .firebase_relay import FirebaseRelay
+
+_firebase_relay: Optional[FirebaseRelay] = None
 
 log = logging.getLogger("nexuslink.ws_server")
 
@@ -37,19 +40,97 @@ call_handler.register(registry)
 active_peers = set()
 active_sessions = []
 _loop = None
+_cloud_clipboard_task = None
 
 log_subscribers = set()
+firebase_wants_logs = False
+last_firebase_activity = 0
+cloud_relay_active = False
+
+def get_firebase_status():
+    global last_firebase_activity
+    return last_firebase_activity
+
+def get_cloud_relay_active():
+    return cloud_relay_active
+
+def _set_cloud_relay_active(active: bool) -> None:
+    global cloud_relay_active, last_firebase_activity, firebase_wants_logs, _firebase_relay, _cloud_clipboard_task
+    cloud_relay_active = active
+    if active:
+        last_firebase_activity = time.time()
+        if _firebase_relay:
+            _firebase_relay.start_heartbeat()
+        if _cloud_clipboard_task is None or _cloud_clipboard_task.done():
+            async def _send_clipboard_update(msg: NexusMessage) -> None:
+                if _firebase_relay:
+                    _firebase_relay.send_to_phone(msg.to_bytes())
+
+            _cloud_clipboard_task = asyncio.create_task(
+                clipboard_handler.clipboard_monitor_task(_send_clipboard_update)
+            )
+    else:
+        firebase_wants_logs = False
+        if _firebase_relay:
+            _firebase_relay.stop_heartbeat()
+        if _cloud_clipboard_task is not None:
+            _cloud_clipboard_task.cancel()
+            _cloud_clipboard_task = None
 
 async def handle_subscribe_logs(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
+    global firebase_wants_logs
     enable = msg.payload.get("enable", False)
     if enable:
-        log_subscribers.add(ws)
-        log.info("Peer %s subscribed to logs", ws.remote_address)
+        if ws:
+            log_subscribers.add(ws)
+            log.info("Peer %s subscribed to logs", ws.remote_address)
+        else:
+            firebase_wants_logs = True
+            log.info("Firebase client subscribed to logs")
     else:
-        log_subscribers.discard(ws)
-        log.info("Peer %s unsubscribed from logs", ws.remote_address)
+        if ws:
+            log_subscribers.discard(ws)
+            log.info("Peer %s unsubscribed from logs", ws.remote_address)
+        else:
+            firebase_wants_logs = False
+            log.info("Firebase client unsubscribed from logs")
 
 registry.register("subscribe_logs", handle_subscribe_logs)
+
+async def handle_request_sync(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
+    from nexuslink.settings_manager import SettingsManager
+    settings = SettingsManager()
+    shortcuts = settings.get_deck_shortcuts()
+    shortcuts_with_icons = []
+    for s in shortcuts:
+        s_copy = s.copy()
+        icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
+        if icon_b64:
+            s_copy["icon"] = icon_b64
+        shortcuts_with_icons.append(s_copy)
+
+    shortcuts_msg = NexusMessage(
+        type="sync_shortcuts",
+        payload={"shortcuts": shortcuts_with_icons}
+    )
+    
+    if cipher and ws:
+        await ws.send(cipher.encrypt(shortcuts_msg.to_bytes()))
+        await ws.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes()))
+    elif _firebase_relay:
+        _firebase_relay.send_to_phone(shortcuts_msg.to_bytes())
+        _firebase_relay.send_to_phone(NexusMessage("request_contacts", {}).to_bytes())
+
+async def handle_cloud_disconnect(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
+    log.info("Cloud relay disconnect received from phone.")
+    _set_cloud_relay_active(False)
+    from gui import DeviceLinkApp
+    app = getattr(DeviceLinkApp, "_instance", None)
+    if app:
+        app.after(0, lambda: app.handle_cloud_relay_disconnect())
+
+registry.register("request_sync", handle_request_sync)
+registry.register("cloud_disconnect", handle_cloud_disconnect)
 
 def get_active_peers():
     return list(active_peers)
@@ -312,6 +393,9 @@ async def send_to_all_peers(msg_type: str, payload: dict) -> None:
     from nexuslink.models import NexusMessage
     msg = NexusMessage(type=msg_type, payload=payload)
     data = msg.to_bytes()
+    sent_via_channel = False
+    
+    # 1. Try WebSocket
     for ws, cipher in list(active_sessions):
         if msg_type == "pc_log" and ws not in log_subscribers:
             continue
@@ -319,13 +403,39 @@ async def send_to_all_peers(msg_type: str, payload: dict) -> None:
             frame = cipher.encrypt(data)
             await ws.send(frame)
             log.info("Sent message '%s' to peer %s", msg_type, ws.remote_address)
+            sent_via_channel = True
         except Exception as exc:
             log.error("Failed to send message to peer %s: %s", ws.remote_address, exc)
+            
+    # 2. Try UDP connection
+    import nexuslink.server.udp_server as udp_server
+    if not sent_via_channel and udp_server.active_udp_session:
+        try:
+            if msg_type == "pc_log" and udp_server.active_udp_session not in log_subscribers:
+                # Wait, log_subscribers contains websockets. If we want UDP logs:
+                # firebase_wants_logs / normal logs is fine.
+                pass
+            
+            cipher = udp_server.active_udp_session["cipher"]
+            frame = cipher.encrypt(data)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, udp_server.active_udp_session["socket"].sendto, frame, udp_server.active_udp_session["addr"])
+            log.info("Sent message '%s' via UDP to %s", msg_type, udp_server.active_udp_session["addr"])
+            sent_via_channel = True
+        except Exception as exc:
+            log.error("Failed to send message to peer via UDP: %s", exc)
+            
+    # 3. Fallback to Firebase Relay
+    if not sent_via_channel and _firebase_relay:
+        if msg_type == "pc_log" and not firebase_wants_logs:
+            pass # Don't send logs if not subscribed
+        else:
+            _firebase_relay.send_to_phone(data)
+            log.info("Sent message '%s' via Firebase Fallback", msg_type)
 
 def send_message_to_all_peers_sync(msg_type: str, payload: dict) -> None:
     global _loop
     if _loop is None:
-        log.warning("No running server event loop found to send message.")
         return
     asyncio.run_coroutine_threadsafe(send_to_all_peers(msg_type, payload), _loop)
 
@@ -346,16 +456,116 @@ class NexusLinkServer:
         self._host = host
         self._port = port
         self._server: Optional[websockets.WebSocketServer] = None
+        
+        global _firebase_relay
+        db_url = "https://devicelink-d4665-default-rtdb.asia-southeast1.firebasedatabase.app/"
+        _firebase_relay = FirebaseRelay(db_url, identity.fingerprint, self._on_firebase_message)
+        _firebase_relay.start_heartbeat()
 
+        import nexuslink.server.udp_server as udp_server
+        udp_server._udp_manager = udp_server.UdpServerManager(
+            self._port, identity, on_session_established=self._on_udp_session_established
+        )
+
+    def _handle_stun_initiate(self, payload):
+        import nexuslink.server.udp_server as udp_server
+        import threading
+        manager = udp_server._udp_manager
+        if not manager:
+            log.error("UDP Server Manager not initialized!")
+            return
+            
+        local_ip = manager.get_local_ip()
+        local_port = manager.port
+        
+        log.info("Querying STUN server to respond to client...")
+        stun_res = manager.query_stun()
+        if stun_res:
+            public_ip, public_port = stun_res
+            log.info("STUN Query success: %s:%d (Local: %s:%d)", public_ip, public_port, local_ip, local_port)
+        else:
+            public_ip = local_ip
+            public_port = local_port
+            log.warning("STUN Query failed. Using local details as fallback.")
+            
+        from nexuslink.models import NexusMessage
+        resp_msg = NexusMessage(
+            type="stun_response",
+            payload={
+                "local_ip": local_ip,
+                "local_port": local_port,
+                "public_ip": public_ip,
+                "public_port": public_port
+            }
+        )
+        if _firebase_relay:
+            _firebase_relay.send_to_phone(resp_msg.to_bytes())
+            log.info("Sent stun_response to client via Firebase")
+            
+        manager.start_hole_punching(payload)
+
+    def _on_udp_session_established(self, addr, cipher):
+        log.info("UDP Session active with %s. Sending sync requests...", addr)
+        import nexuslink.server.udp_server as udp_server
+        wrapper = udp_server.UdpSessionWrapper(udp_server._udp_manager.sock, addr, cipher)
+        
+        from nexuslink.settings_manager import SettingsManager
+        settings = SettingsManager()
+        shortcuts = settings.get_deck_shortcuts()
+        shortcuts_with_icons = []
+        for s in shortcuts:
+            s_copy = s.copy()
+            from nexuslink.server.ws_server import extract_shortcut_icon
+            icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
+            if icon_b64:
+                s_copy["icon"] = icon_b64
+            shortcuts_with_icons.append(s_copy)
+
+        shortcuts_msg = NexusMessage(
+            type="sync_shortcuts",
+            payload={"shortcuts": shortcuts_with_icons}
+        )
+        
+        if _loop:
+            asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(shortcuts_msg.to_bytes())), _loop)
+            asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes())), _loop)
+
+    def _on_firebase_message(self, plaintext: bytes):
+        global last_firebase_activity
+        last_firebase_activity = time.time()
+        try:
+            from nexuslink.models import NexusMessage
+            msg = NexusMessage.from_bytes(plaintext)
+            log.debug("→ (Firebase) [%s] %s", msg.type, msg.id)
+
+            if msg.type == "stun_initiate":
+                import threading
+                threading.Thread(target=self._handle_stun_initiate, args=(msg.payload,), daemon=True).start()
+                return
+
+            if msg.type == "request_sync":
+                if _loop:
+                    _loop.call_soon_threadsafe(_set_cloud_relay_active, True)
+            
+            if msg.type == "request_sync":
+                print("[Server] ← Firebase Cloud Relay connection established!")
+                print("[Server] ✓ Secure session active via Cloud")
+                
+            if _loop:
+                asyncio.run_coroutine_threadsafe(registry.dispatch(msg, None, None), _loop)
+        except Exception as e:
+            log.error("Failed to process firebase msg: %s", e)
 
     async def start(self) -> None:
         global _loop
         _loop = asyncio.get_running_loop()
+        import nexuslink.server.udp_server as udp_server
+        udp_server._loop = _loop
         self._server = await websockets.serve(
             self._handle_connection,
             self._host,
             self._port,
-            max_size=10 * 1024 * 1024, 
+            max_size=10 * 1024 * 1024,
         )
         log.info(
             "NexusLink WebSocket server listening on ws://%s:%d",
@@ -368,6 +578,9 @@ class NexusLinkServer:
             self._server.close()
             await self._server.wait_closed()
             log.info("WebSocket server stopped.")
+        import nexuslink.server.udp_server as udp_server
+        if udp_server._udp_manager:
+            udp_server._udp_manager.stop()
 
 
     async def _handle_connection(
@@ -427,6 +640,7 @@ class NexusLinkServer:
         finally:
             active_peers.discard(peer)
             log_subscribers.discard(websocket)
+            _set_cloud_relay_active(False)
             for item in list(active_sessions):
                 if item[0] == websocket:
                     try:
@@ -527,8 +741,11 @@ class NexusLinkServer:
         cipher: SessionCipher,
     ) -> None:
         """Receive and dispatch encrypted messages indefinitely."""
-        monitor_task = asyncio.create_task(clipboard_handler.clipboard_monitor_task(ws, cipher))
-        dropzone_task = asyncio.create_task(dropzone_watcher.dropzone_monitor_task(ws, cipher))
+        async def send_clipboard_update(msg: NexusMessage) -> None:
+            frame = cipher.encrypt(msg.to_bytes())
+            await ws.send(frame)
+
+        monitor_task = asyncio.create_task(clipboard_handler.clipboard_monitor_task(send_clipboard_update))
         try:
             async for frame in ws:
                 if isinstance(frame, str):
@@ -543,7 +760,6 @@ class NexusLinkServer:
                     log.error("Failed to process frame: %s", exc)
         finally:
             monitor_task.cancel()
-            dropzone_task.cancel()
 
 def _b64url_decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")

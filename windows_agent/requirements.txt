@@ -10,3 +10,5 @@ aiohttp>=3.9.0
 python-dotenv>=1.0.0
 customtkinter>=5.2.2
 pystray>=0.19.5
+requests>=2.31.0
+sseclient-py>=1.8.0

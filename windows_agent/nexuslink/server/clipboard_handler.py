@@ -15,6 +15,7 @@ import ctypes.wintypes
 import logging
 import sys
 import threading
+from typing import Awaitable, Callable
 
 import pyperclip
 
@@ -34,8 +35,16 @@ WM_CLOSE          = 0x0010
 user32   = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+user32.DefWindowProcW.argtypes = [
+    ctypes.wintypes.HWND,
+    ctypes.c_uint,
+    ctypes.wintypes.WPARAM,
+    ctypes.wintypes.LPARAM,
+]
+user32.DefWindowProcW.restype = ctypes.c_ssize_t
+
 WNDPROCTYPE = ctypes.WINFUNCTYPE(
-    ctypes.c_long,
+    ctypes.c_ssize_t,
     ctypes.wintypes.HWND,
     ctypes.c_uint,
     ctypes.wintypes.WPARAM,
@@ -156,7 +165,7 @@ class _ClipboardListener:
         log.info("ClipboardHook: Message pump exited cleanly")
 
 
-async def clipboard_monitor_task(websocket, cipher: SessionCipher) -> None:
+async def clipboard_monitor_task(send_message: Callable[[NexusMessage], Awaitable[None]]) -> None:
 
     global _last_clipboard_text
 
@@ -187,8 +196,7 @@ async def clipboard_monitor_task(websocket, cipher: SessionCipher) -> None:
                             type=MSG_TYPE_CLIPBOARD_UPDATE,
                             payload={"text": text}
                         )
-                        frame = cipher.encrypt(update_msg.to_bytes())
-                        await websocket.send(frame)
+                        await send_message(update_msg)
             except asyncio.CancelledError:
                 listener.stop()
                 raise
@@ -211,8 +219,7 @@ async def clipboard_monitor_task(websocket, cipher: SessionCipher) -> None:
                     type=MSG_TYPE_CLIPBOARD_UPDATE,
                     payload={"text": current_text}
                 )
-                frame = cipher.encrypt(update_msg.to_bytes())
-                await websocket.send(frame)
+                await send_message(update_msg)
             else:
                 _idle += 1
         except Exception as exc:
