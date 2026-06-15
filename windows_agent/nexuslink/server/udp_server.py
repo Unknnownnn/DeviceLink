@@ -18,11 +18,22 @@ active_udp_session = None
 _udp_manager = None
 _loop = None
 
-def get_active_udp_peer():
+def get_active_udp_session():
     global active_udp_session
     if active_udp_session:
-        return active_udp_session["addr"]
+        if time.time() - active_udp_session.get("last_seen", 0) > 12.0:
+            log.info("UDP session timed out (no packets received for 12 seconds)")
+            active_udp_session = None
+            if _udp_manager:
+                _udp_manager.reset_session()
+    return active_udp_session
+
+def get_active_udp_peer():
+    session = get_active_udp_session()
+    if session:
+        return session["addr"]
     return None
+
 
 class UdpSessionWrapper:
     def __init__(self, sock, addr, cipher):
@@ -34,7 +45,7 @@ class UdpSessionWrapper:
     async def send(self, data: bytes) -> None:
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.sock.sendto, data, self.addr)
+            await loop.run_in_executor(None, lambda: self.sock.sendto(data, self.addr))
             log.debug("Sent UDP packet to %s", self.addr)
         except Exception as e:
             log.error("Failed to send UDP packet to %s: %s", self.addr, e)
@@ -77,6 +88,14 @@ class UdpServerManager:
         self.listen_thread = threading.Thread(target=self._listen, daemon=True)
         self.listen_thread.start()
 
+    def reset_session(self):
+        log.info("Resetting UDP session and handshake state.")
+        self.session_cipher = None
+        self.peer_addr = None
+        self.client_x25519_b64 = None
+        self.client_ed25519_b64 = None
+        self.handshake_manager = HandshakeManager()
+
     def stop(self):
         self.running = False
         try:
@@ -104,24 +123,30 @@ class UdpServerManager:
         req = struct.pack("!HHI12s", 0x0001, 0x0000, 0x2112A442, tx_id)
         
         stun_targets = [
+            ("173.194.202.127", 19302),
+            ("74.125.143.127", 19302),
+            ("108.177.119.127", 19302),
+            ("54.172.47.199", 3478),
             ("stun.l.google.com", 19302),
             ("stun1.l.google.com", 19302),
             ("stun.chat.twilio.com", 3478),
             ("stun.sipgate.net", 10000)
         ]
         
+        def send_request(host, port):
+            try:
+                addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+                if addr_info:
+                    ip = addr_info[0][4][0]
+                    self.sock.sendto(req, (ip, port))
+            except Exception as e:
+                log.debug("Failed to resolve/send STUN to %s: %s", host, e)
+
         for attempt in range(2):
             if not self.running:
                 break
             for host, port in stun_targets:
-                try:
-                    # Resolve host strictly to IPv4 and send STUN request
-                    addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
-                    if addr_info:
-                        ip = addr_info[0][4][0]
-                        self.sock.sendto(req, (ip, port))
-                except Exception as e:
-                    log.debug("Failed to resolve/send STUN to %s: %s", host, e)
+                threading.Thread(target=send_request, args=(host, port), daemon=True).start()
             # Wait for any of the servers to set the result
             if event.wait(1.5):
                 res = self.stun_queries[tx_id]["result"]
@@ -193,7 +218,7 @@ class UdpServerManager:
                                         ip = socket.inet_ntoa(attr_val[4:8])
                                         res = (ip, port)
                                         break
-                            elif attr_type == 0x0020:  # XOR-MAPPED-ADDRESS
+                            elif attr_type in (0x0020, 0x8020):  # XOR-MAPPED-ADDRESS
                                 if len(attr_val) >= 8:
                                     family = attr_val[1]
                                     if family == 0x01: # IPv4
@@ -226,6 +251,16 @@ class UdpServerManager:
                     continue
 
                 # 3. Check if it's handshake hello
+                if data.startswith(b'{"type"'):
+                    try:
+                        msg = json.loads(data.decode("utf-8"))
+                        if msg.get("type") == MsgType.HELLO:
+                            log.info("Plaintext HELLO handshake packet received. Resetting UDP session.")
+                            self.session_cipher = None
+                            active_udp_session = None
+                    except Exception:
+                        pass
+
                 if not self.session_cipher:
                     try:
                         plaintext_str = data.decode("utf-8")
@@ -283,7 +318,8 @@ class UdpServerManager:
                                 active_udp_session = {
                                     "addr": addr,
                                     "socket": self.sock,
-                                    "cipher": self.session_cipher
+                                    "cipher": self.session_cipher,
+                                    "last_seen": time.time()
                                 }
                                 print(f"[Server] ✓ Secure session active via STUN/UDP Hole Punching: {addr}")
                                 log.info("Secure UDP session established with %s", addr)
@@ -301,6 +337,15 @@ class UdpServerManager:
                 # 4. Decrypt and handle data packets
                 try:
                     plaintext = self.session_cipher.decrypt(data)
+                    if active_udp_session:
+                        active_udp_session["last_seen"] = time.time()
+                    else:
+                        active_udp_session = {
+                            "addr": addr,
+                            "socket": self.sock,
+                            "cipher": self.session_cipher,
+                            "last_seen": time.time()
+                        }
                     msg = NexusMessage.from_bytes(plaintext)
                     log.debug("→ (UDP) [%s] %s", msg.type, msg.id)
                     

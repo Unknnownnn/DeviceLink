@@ -64,6 +64,16 @@ import com.nexuslink.app.ui.theme.*
 import com.nexuslink.app.ui.viewmodels.ConnectionViewModel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,6 +86,17 @@ fun ConnectionScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+
+    var hasConnectedBefore by remember { mutableStateOf(false) }
+
+    LaunchedEffect(uiState.connectionState) {
+        if (uiState.connectionState is ConnectionState.Connected) {
+            hasConnectedBefore = true
+        } else if (hasConnectedBefore && (uiState.connectionState is ConnectionState.Disconnected || uiState.connectionState is ConnectionState.Error)) {
+            // We were connected, but got disconnected/error! Pop screen to scanning.
+            onDisconnect()
+        }
+    }
 
     var nlpPrompt by remember { mutableStateOf("") }
     var nlpResponseDialogText by remember { mutableStateOf<String?>(null) }
@@ -162,23 +183,144 @@ fun ConnectionScreen(
         ) {
             AnimatedContent(targetState = uiState.connectionState, label = "conn_state") { state ->
                 when (state) {
-                    is ConnectionState.Disconnected, is ConnectionState.Connecting -> {
-                        StatusBanner(
-                            icon = Icons.Default.Sync,
-                            iconTint = Cyan400,
-                            title = "Connecting...",
-                            subtitle = "Establishing socket to $host:$port",
-                            containerColor = Surface800
-                        )
+                    is ConnectionState.Disconnected -> {
+                        if (uiState.connectionPhase.isEmpty()) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Disconnected",
+                                    tint = OnSurfaceDim,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Disconnected",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = OnSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Connection lost or could not be established.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = OnSurfaceDim,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Button(
+                                    onClick = { viewModel.connect(host, port, fingerprint) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Blue400),
+                                    modifier = Modifier.fillMaxWidth(0.6f)
+                                ) {
+                                    Text("Retry Connection", color = OnSurface)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(
+                                    onClick = { onDisconnect() }
+                                ) {
+                                    Text("Go Back to List", color = OnSurfaceDim)
+                                }
+                            }
+                        } else {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                ConnectionLoader()
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Text(
+                                    text = "Connecting...",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = OnSurface
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = uiState.connectionPhase,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = OnSurfaceDim,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
                     }
-                    is ConnectionState.Handshaking -> {
-                        StatusBanner(
-                            icon = Icons.Default.Sync,
-                            iconTint = Blue400,
-                            title = "Handshaking...",
-                            subtitle = "Performing X25519 ECDH key exchange",
-                            containerColor = Surface800
-                        )
+                    is ConnectionState.Connecting, is ConnectionState.Handshaking -> {
+                        val statusTitle = if (state is ConnectionState.Handshaking) "Handshaking..." else "Connecting..."
+                        val statusSubtitle = if (uiState.connectionPhase.isNotEmpty()) {
+                            uiState.connectionPhase
+                        } else if (state is ConnectionState.Handshaking) {
+                            "Performing X25519 ECDH key exchange"
+                        } else {
+                            "Establishing socket to $host:$port"
+                        }
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ConnectionLoader()
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Text(
+                                text = statusTitle,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = OnSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = statusSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = OnSurfaceDim,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    }
+                    is ConnectionState.Error -> {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth().padding(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = "Error",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Connection Failed",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = OnSurface
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = state.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = OnSurfaceDim,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(
+                                onClick = { viewModel.connect(host, port, fingerprint) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Rose400),
+                                modifier = Modifier.fillMaxWidth(0.6f)
+                            ) {
+                                Text("Retry Connection", color = OnSurface)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = { onDisconnect() }
+                            ) {
+                                Text("Go Back to List", color = OnSurfaceDim)
+                            }
+                        }
                     }
                     is ConnectionState.Connected -> {
                         val sections = remember { listOf("AI", "Apps", "Power", "Logs") }
@@ -312,10 +454,25 @@ fun ConnectionScreen(
                                         }
                                     }
                                     "Power" -> {
-                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                            DeckButton("Lock", Icons.Default.Lock, color = Emerald500) { viewModel.sendPowerCommand("lock") }
-                                            DeckButton("Sleep", Icons.Default.NightsStay, color = Emerald500) { viewModel.sendPowerCommand("sleep") }
-                                            DeckButton("Shutdown", Icons.Default.PowerSettingsNew, color = Rose500) { viewModel.sendPowerCommand("shutdown") }
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceEvenly
+                                            ) {
+                                                DeckButton("Lock", Icons.Default.Lock, color = Emerald500) { viewModel.sendPowerCommand("lock") }
+                                                DeckButton("Sleep", Icons.Default.NightsStay, color = Emerald500) { viewModel.sendPowerCommand("sleep") }
+                                            }
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceEvenly
+                                            ) {
+                                                DeckButton("Restart", Icons.Default.Sync, color = Rose500) { viewModel.sendPowerCommand("restart") }
+                                                DeckButton("Shutdown", Icons.Default.PowerSettingsNew, color = Rose500) { viewModel.sendPowerCommand("shutdown") }
+                                            }
                                         }
                                     }
                                     "Logs" -> {
@@ -416,16 +573,6 @@ fun ConnectionScreen(
                                 Text("Send File to PC")
                             }
                         }
-                    }
-                    is ConnectionState.Error -> {
-                        StatusBanner(
-                            icon = Icons.Default.Error,
-                            iconTint = Rose500,
-                            title = "Connection Failed",
-                            subtitle = state.message,
-                            containerColor = Rose500.copy(alpha = 0.1f),
-                            borderColor = Rose500.copy(alpha = 0.3f)
-                        )
                     }
                 }
             }
@@ -766,3 +913,124 @@ fun ExpandableGridItem(
         }
     }
 }
+
+@Composable
+fun ConnectionLoader(
+    modifier: Modifier = Modifier,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "")
+
+    val ring1 = infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 4000
+
+                0f at 0
+                1f at 1000     // draw
+                1f at 2000     // hold
+                0f at 3000     // erase
+                0f at 4000
+            }
+        ),
+        label = ""
+    )
+
+    val ring2 = infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 4000
+
+                0f at 0
+                0f at 500
+                1f at 1500
+                1f at 2500
+                0f at 3500
+                0f at 4000
+            }
+        ),
+        label = ""
+    )
+
+    val ring3 = infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 4000
+
+                0f at 0
+                0f at 1000
+                1f at 2000
+                1f at 3000
+                0f at 4000
+            }
+        ),
+        label = ""
+    )
+
+    Box(
+        modifier = modifier.size(220.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier.fillMaxSize()
+        ) {
+
+            drawAnimatedRing(
+                radius = 40.dp.toPx(),
+                progress = ring1.value,
+                color = Color(0xFF00E5FF),
+                strokeWidth = 8.dp.toPx()
+            )
+
+            drawAnimatedRing(
+                radius = 60.dp.toPx(),
+                progress = ring2.value,
+                color = Color(0xFF7C4DFF),
+                strokeWidth = 8.dp.toPx()
+            )
+
+            drawAnimatedRing(
+                radius = 80.dp.toPx(),
+                progress = ring3.value,
+                color = Color(0xFF00FF95),
+                strokeWidth = 8.dp.toPx()
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawAnimatedRing(
+    radius: Float,
+    progress: Float,
+    color: Color,
+    strokeWidth: Float
+) {
+    val center = center
+
+    val sweep = 360f * progress
+
+    drawArc(
+        color = color,
+        startAngle = -90f,
+        sweepAngle = sweep,
+        useCenter = false,
+        topLeft = Offset(
+            center.x - radius,
+            center.y - radius
+        ),
+        size = Size(
+            radius * 2,
+            radius * 2
+        ),
+        style = Stroke(
+            width = strokeWidth,
+            cap = StrokeCap.Round
+        )
+    )
+}
+

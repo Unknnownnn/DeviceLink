@@ -35,6 +35,7 @@ data class ConnectionUiState(
     val lastClipboardSync: String = "",
     val errorMessage: String? = null,
     val logs: List<String> = emptyList(),
+    val connectionPhase: String = "",
 )
 
 @Singleton
@@ -79,6 +80,8 @@ class ConnectionManager @Inject constructor(
     private var connectJob: kotlinx.coroutines.Job? = null
     private val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private var lastClipboardSent = ""
+    private var lastSeenPcTime = 0L
+    private var heartbeatJob: kotlinx.coroutines.Job? = null
 
     private fun stopFirebaseRelay(notifyCloudDisconnect: Boolean = false) {
         val relay = firebaseRelay ?: return
@@ -137,8 +140,10 @@ class ConnectionManager @Inject constructor(
             peerFingerprint = peerFingerprint,
             errorMessage = null,
             connectionState = ConnectionState.Connecting,
+            connectionPhase = "Initiating connection...",
             logs = emptyList() // Clear logs on new connection
         ) }
+        lastSeenPcTime = System.currentTimeMillis()
 
         addLog("Connecting to secure agent...")
 
@@ -149,7 +154,8 @@ class ConnectionManager @Inject constructor(
             var targetPort = port
 
             if (targetHost.equals("cloud", ignoreCase = true)) {
-                addLog("Stage 1: Device is listed as Cloud. Scanning local network for mDNS endpoint...")
+                _uiState.update { it.copy(connectionPhase = "Stage 1: Scanning local network via mDNS") }
+                addLog("Stage 1: Device is listed as Cloud. Scanning local network for mDNS endpoint")
                 try {
                     kotlinx.coroutines.withTimeout(2500) {
                         discoveryManager.discoverDevices().collect { devices ->
@@ -170,6 +176,7 @@ class ConnectionManager @Inject constructor(
             }
 
             if (!targetHost.equals("cloud", ignoreCase = true)) {
+                _uiState.update { it.copy(connectionPhase = "Stage 1: Connecting to local agent via mDNS") }
                 addLog("Stage 1: Attempting local mDNS connection to $targetHost:$targetPort...")
                 val wsClient = NexusWebSocketClient(
                     host = targetHost,
@@ -191,6 +198,7 @@ class ConnectionManager @Inject constructor(
                 
                 val wsEventJob = launch {
                     for (event in wsClient.events) {
+                        recordActivity()
                         when (event) {
                             is SessionEvent.SessionEstablished -> {
                                 addLog("Secure mDNS session established: ${event.deviceName}")
@@ -239,11 +247,13 @@ class ConnectionManager @Inject constructor(
             }
             
             // Stage 2: Try STUN / UDP Hole Punching
+            _uiState.update { it.copy(connectionPhase = "Stage 2: Initiating STUN UDP hole punching...") }
             addLog("Stage 2: Attempting STUN with UDP hole punching...")
             
             stopFirebaseRelay()
             val signalReceived = kotlinx.coroutines.channels.Channel<JSONObject>(kotlinx.coroutines.channels.Channel.BUFFERED)
             val relay = FirebaseRelay(peerFingerprint, scope) { jsonStr ->
+                recordActivity()
                 scope.launch {
                     try {
                         val json = JSONObject(jsonStr)
@@ -273,6 +283,7 @@ class ConnectionManager @Inject constructor(
             var stunAddr: InetSocketAddress? = null
             
             try {
+                _uiState.update { it.copy(connectionPhase = "Stage 2: Querying STUN server") }
                 addLog("Querying STUN server (stun.l.google.com)...")
                 stunAddr = udp.queryStun(localPort)
                 
@@ -302,6 +313,7 @@ class ConnectionManager @Inject constructor(
                 put("payload", initPayload)
             }
             
+            _uiState.update { it.copy(connectionPhase = "Stage 2: Exchanging connection candidates") }
             addLog("Sending candidates to PC via Cloud Relay...")
             relay.sendMessage(stunInitMsg.toString().toByteArray(Charsets.UTF_8))
             
@@ -316,6 +328,7 @@ class ConnectionManager @Inject constructor(
             
             var udpSuccess = false
             if (stunResponsePayload != null) {
+                _uiState.update { it.copy(connectionPhase = "Stage 2: Punching UDP hole") }
                 addLog("Received PC candidates. Punching UDP hole...")
                 
                 val udpStateJob = launch {
@@ -329,6 +342,7 @@ class ConnectionManager @Inject constructor(
                 
                 val udpEventJob = launch {
                     for (event in udp.events) {
+                        recordActivity()
                         when (event) {
                             is SessionEvent.SessionEstablished -> {
                                 addLog("Secure STUN/UDP session established!")
@@ -365,6 +379,7 @@ class ConnectionManager @Inject constructor(
                 
                 if (udpSuccess) {
                     addLog("Stage 2 success: Connected directly via UDP hole punch!")
+                    startHeartbeatLoop(isUdp = true)
                     return@launch
                 } else {
                     addLog("Stage 2 failed: UDP connection timed out.")
@@ -380,14 +395,22 @@ class ConnectionManager @Inject constructor(
             }
             
             // Stage 3: Fallback to Firebase Relay
+            _uiState.update { it.copy(
+                connectionState = ConnectionState.Connected("cloud", 0),
+                connectionPhase = "Stage 3: Connected via Cloud Relay"
+            ) }
             addLog("Stage 3: STUN failed. Falling back to Firebase Cloud Relay.")
-            _uiState.update { it.copy(connectionState = ConnectionState.Connected("cloud", 0)) }
             addLog("Connected securely via Cloud Relay.")
             sendMessage("request_sync", JSONObject())
+            startHeartbeatLoop(isUdp = false)
         }
     }
 
     private suspend fun handleMessageReceived(event: SessionEvent.MessageReceived) {
+        recordActivity()
+        if (event.type == "pong") {
+            return
+        }
         if (event.type == "nlp_response") {
             val result = event.payload.optString("result", "No result")
             addLog("AI Command Result: $result")
@@ -410,6 +433,22 @@ class ConnectionManager @Inject constructor(
             }
             addLog("Synced ${shortcuts.size} deck shortcuts from PC")
             _deckShortcuts.value = shortcuts
+        } else if (event.type == "sync_shortcut_icon") {
+            val id = event.payload.optString("id", "")
+            val icon = event.payload.optString("icon", "")
+            if (id.isNotBlank()) {
+                val current = _deckShortcuts.value
+                val updated = current.map { shortcut ->
+                    if (shortcut.optString("id") == id) {
+                        org.json.JSONObject(shortcut.toString()).apply {
+                            put("icon", icon)
+                        }
+                    } else {
+                        shortcut
+                    }
+                }
+                _deckShortcuts.value = updated
+            }
         } else if (event.type == "make_call") {
             val number = event.payload.optString("number", "")
             if (number.isNotBlank()) {
@@ -512,10 +551,44 @@ class ConnectionManager @Inject constructor(
         addLog("Sent message via Firebase Fallback: $type")
     }
 
+    private fun recordActivity() {
+        lastSeenPcTime = System.currentTimeMillis()
+    }
+
+    private fun startHeartbeatLoop(isUdp: Boolean) {
+        heartbeatJob?.cancel()
+        lastSeenPcTime = System.currentTimeMillis()
+        heartbeatJob = scope.launch(Dispatchers.IO) {
+            val timeoutMillis = if (isUdp) 12000L else 15000L
+            while (true) {
+                delay(4000)
+                val isConnected = _uiState.value.connectionState is ConnectionState.Connected
+                if (!isConnected) break
+                
+                val now = System.currentTimeMillis()
+                if (now - lastSeenPcTime > timeoutMillis) {
+                    addLog("Connection timed out (no response from PC for ${timeoutMillis / 1000}s).")
+                    launch(Dispatchers.Main) {
+                        disconnect()
+                    }
+                    break
+                }
+                
+                try {
+                    sendMessage("ping", JSONObject().apply { put("ping_ts", now) })
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send heartbeat ping", e)
+                }
+            }
+        }
+    }
+
     fun disconnect() {
         addLog("Disconnecting secure session.")
         connectJob?.cancel()
         connectJob = null
+        heartbeatJob?.cancel()
+        heartbeatJob = null
 
         val currentConnection = _uiState.value.connectionState as? ConnectionState.Connected
         val notifyCloudDisconnect = currentConnection?.host?.equals("cloud", ignoreCase = true) == true
@@ -529,14 +602,27 @@ class ConnectionManager @Inject constructor(
         client?.disconnect()
         client = null
         
-        udpClient?.disconnect()
-        udpClient = null
+        if (udpClient != null) {
+            val clientToNotify = udpClient
+            scope.launch {
+                try {
+                    clientToNotify?.send("udp_disconnect", JSONObject())
+                    delay(150)
+                } catch (e: Exception) {
+                    // ignore
+                } finally {
+                    clientToNotify?.disconnect()
+                }
+            }
+            udpClient = null
+        }
 
         _uiState.update {
             it.copy(
                 connectionState = ConnectionState.Disconnected,
                 peerFingerprint = null,
                 errorMessage = null,
+                connectionPhase = ""
             )
         }
     }

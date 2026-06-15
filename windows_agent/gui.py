@@ -67,7 +67,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -150,7 +150,6 @@ class DeviceLinkApp(ctk.CTk):
         self.settings = SettingsManager()
         self.check_single_instance()
 
-        # Clean up old exe backups if they exist (fallback)
         if getattr(sys, 'frozen', False):
             old_exe = sys.executable + ".old"
             if os.path.exists(old_exe):
@@ -178,6 +177,13 @@ class DeviceLinkApp(ctk.CTk):
 
         DeviceLinkApp._instance = self
         self.call_overlay_window = None
+        self.last_status = None
+        self.is_focused = True
+        self.status_animation_task = None
+        self.has_shown_udp_file_warning = False
+        self.status_base_text = "Waiting for Android connection"
+        self.bind("<FocusIn>", self.on_focus_in)
+        self.bind("<FocusOut>", self.on_focus_out)
 
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.log_history = []
@@ -210,6 +216,7 @@ class DeviceLinkApp(ctk.CTk):
         self.backend_thread.start()
         self.setup_tray()
         self.update_connection_status_loop()
+        self.trigger_status_animation()
 
     def _build_status_tab(self):
         status_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
@@ -217,14 +224,14 @@ class DeviceLinkApp(ctk.CTk):
         
         self.status_title = ctk.CTkLabel(
             status_frame, 
-            text="DeviceLink Server Active", 
+            text="DeviceLink Server", 
             font=ctk.CTkFont(size=18, weight="bold")
         )
         self.status_title.pack(anchor="w")
 
         self.status_info = ctk.CTkLabel(
             status_frame, 
-            text="Port: 47200. Open the Android app to connect.", 
+            text="Open the Android app to connect.", 
             text_color="gray",
             font=ctk.CTkFont(size=12)
         )
@@ -237,7 +244,9 @@ class DeviceLinkApp(ctk.CTk):
             self.conn_status_frame, 
             text="●", 
             text_color="#F59E0B", 
-            font=ctk.CTkFont(size=14)
+            font=ctk.CTkFont(size=14),
+            height=32,
+            width=24
         )
         self.status_dot.pack(side="left", padx=(12, 6))
         
@@ -245,7 +254,8 @@ class DeviceLinkApp(ctk.CTk):
             self.conn_status_frame, 
             text="Waiting for Android connection...", 
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#CBD5E1"
+            text_color="#CBD5E1",
+            height=32
         )
         self.status_text.pack(side="left", padx=(0, 12))
 
@@ -277,9 +287,7 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.show_logs_btn.pack(side="left")
 
-        # File Transfer Progress Bar
         self.progress_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
-        # Hidden by default
 
         self.progress_label = ctk.CTkLabel(
             self.progress_frame,
@@ -366,6 +374,18 @@ class DeviceLinkApp(ctk.CTk):
         self.log_textbox.configure(state="disabled")
 
     def send_file_to_device(self):
+        from nexuslink.server.udp_server import get_active_udp_peer
+        if get_active_udp_peer():
+            if not getattr(self, "has_shown_udp_file_warning", False):
+                from tkinter import messagebox
+                messagebox.showwarning(
+                    "Unreliable Connection Warning",
+                    "You are currently connected via STUN UDP Hole Punching.\n\n"
+                    "File transfers over UDP are unreliable. Packets may be dropped, "
+                    "and large files may not be sent or received correctly."
+                )
+                self.has_shown_udp_file_warning = True
+
         filepath = ctk.filedialog.askopenfilename(
             title="Select File to Send to Device"
         )
@@ -377,6 +397,7 @@ class DeviceLinkApp(ctk.CTk):
     def _send_file_worker(self, filepath, filename):
         import base64
         import uuid
+        import time
         from nexuslink.server.ws_server import send_message_to_all_peers_sync
         
         try:
@@ -413,7 +434,11 @@ class DeviceLinkApp(ctk.CTk):
                     seq += 1
                     bytes_sent += len(chunk)
                     
+                    # Update progress locally in sync with the paced sending
                     self._update_progress_from_thread(filename, bytes_sent, file_size)
+                    
+                    # Pace chunk sending to prevent packet drop/congestion over the network
+                    time.sleep(0.015)
                     
             # Send file_transfer_complete
             send_message_to_all_peers_sync(
@@ -477,43 +502,76 @@ class DeviceLinkApp(ctk.CTk):
         
         self.after(interval, self.check_logs_loop)
 
-    def update_connection_status_loop(self):
+    def refresh_connection_status(self, force=False):
         try:
             from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active
             from nexuslink.server.udp_server import get_active_udp_peer
             peers = get_active_peers()
             udp_peer = get_active_udp_peer()
+            cloud_relay_active = get_cloud_relay_active()
+
+            # Create a unique key representing the current connection state to check for changes
+            peers_key = tuple(sorted(peers)) if peers else ()
+            current_status = (peers_key, udp_peer, cloud_relay_active)
+
+            if not force and self.last_status == current_status:
+                return
+
+            self.has_shown_udp_file_warning = False
+
+            # Detect transition from disconnected/waiting to connected
+            was_waiting = True
+            if self.last_status:
+                prev_peers, prev_udp, prev_cloud = self.last_status
+                if prev_peers or prev_udp or prev_cloud:
+                    was_waiting = False
+
+            self.last_status = current_status
+            self.animation_frame = 0  # Reset animation frame on state change
+
             if peers:
                 peer_str = ", ".join(f"{p[0]}:{p[1]}" for p in peers)
-                self.status_dot.configure(text_color="#10B981") # Green
-                self.status_text.configure(text=f"Connected to {peer_str}")
+                self.status_base_text = f"Connected via mDNS/LAN: {peer_str}"
+                self.status_dot.configure(text="✔", text_color="#10B981") # Green
+                self.status_text.configure(text=self.status_base_text, text_color="#10B981")
                 self.set_phone_tab_state("normal")
                 self.send_file_btn.configure(state="normal")
+                if was_waiting:
+                    self.run_checkmark_pulse(0)
             elif udp_peer:
-                self.status_dot.configure(text_color="#10B981") # Green
-                self.status_text.configure(text=f"Connected via STUN UDP: {udp_peer[0]}:{udp_peer[1]}")
+                self.status_base_text = f"Connected via STUN UDP: {udp_peer[0]}:{udp_peer[1]}"
+                self.status_dot.configure(text="✔", text_color="#3B82F6") # Blue
+                self.status_text.configure(text=self.status_base_text, text_color="#3B82F6")
                 self.set_phone_tab_state("normal")
                 self.send_file_btn.configure(state="normal")
+                if was_waiting:
+                    self.run_checkmark_pulse(0)
             else:
                 self.send_file_btn.configure(state="disabled")
-                if get_cloud_relay_active():
-                    self.status_dot.configure(text_color="#06B6D4") # Cyan
-                    self.status_text.configure(text="Connected via Cloud Relay")
+                if cloud_relay_active:
+                    self.status_base_text = "Connected via Cloud Relay"
+                    self.status_dot.configure(text="✔", text_color="#06B6D4") # Cyan
+                    self.status_text.configure(text=self.status_base_text, text_color="#06B6D4")
                     self.set_phone_tab_state("disabled")
+                    if was_waiting:
+                        self.run_checkmark_pulse(0)
                 else:
-                    self.status_dot.configure(text_color="#F59E0B") # Yellow/Orange
-                    self.status_text.configure(text="Waiting for Android connection...")
+                    self.status_base_text = "Waiting for Android connection"
+                    self.status_dot.configure(text="●", text_color="#D97706", font=ctk.CTkFont(size=14)) # Reset dot and font size
+                    self.status_text.configure(text=self.status_base_text, text_color="#D97706")
                     self.set_phone_tab_state("disabled")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Console] Error updating connection status: {e}")
 
-        self.after(3000, self.update_connection_status_loop)
+    def update_connection_status_loop(self):
+        self.refresh_connection_status()
+        is_visible = self.winfo_viewable()
+        interval = 3000 if is_visible else 10000
+        self.after(interval, self.update_connection_status_loop)
 
     def handle_cloud_relay_disconnect(self):
-        self.status_dot.configure(text_color="#F59E0B")
-        self.status_text.configure(text="Waiting for Android connection...")
-        self.set_phone_tab_state("disabled")
-        self.send_file_btn.configure(state="disabled")
+        self.last_status = None
+        self.refresh_connection_status(force=True)
 
     def set_phone_tab_state(self, state):
         try:
@@ -525,6 +583,77 @@ class DeviceLinkApp(ctk.CTk):
                 self.tabview._segmented_button._buttons_dict["Phone Calls"].configure(state="normal")
         except Exception:
             pass
+
+    def run_checkmark_pulse(self, frame_index):
+        # 14 keyframes peaking at size 20 (fits within 32px container) at 25ms intervals for a total of 350ms
+        pulse_frames = [8, 10, 12, 14, 16, 18, 19, 20, 19, 18, 16, 14, 13, 14]
+        if frame_index < len(pulse_frames):
+            size = pulse_frames[frame_index]
+            try:
+                self.status_dot.configure(font=ctk.CTkFont(size=size, weight="bold"))
+            except Exception:
+                pass
+            # Schedule next frame in 25ms for a smooth 350ms animation
+            self.after(25, lambda: self.run_checkmark_pulse(frame_index + 1))
+
+    def on_focus_in(self, event=None):
+        if event and event.widget != self:
+            return
+        self.is_focused = True
+        self.trigger_status_animation()
+
+    def on_focus_out(self, event=None):
+        if event and event.widget != self:
+            return
+        self.is_focused = False
+
+    def trigger_status_animation(self):
+        if self.status_animation_task:
+            try:
+                self.after_cancel(self.status_animation_task)
+            except Exception:
+                pass
+            self.status_animation_task = None
+        self.run_status_animation()
+
+    def run_status_animation(self):
+        is_visible = self.winfo_viewable() and self.state() != "iconic"
+        is_focused = getattr(self, "is_focused", True)
+
+        if not is_visible or not is_focused:
+            # Idle mode to check back less frequently and save CPU
+            self.status_animation_task = self.after(1000, self.run_status_animation)
+            return
+
+        state_cat = "waiting"
+        if self.last_status:
+            peers_key, udp_peer, cloud_relay_active = self.last_status
+            if peers_key:
+                state_cat = "mdns"
+            elif udp_peer:
+                state_cat = "stun"
+            elif cloud_relay_active:
+                state_cat = "cloud"
+
+        base_text = getattr(self, "status_base_text", "Waiting for Android connection")
+
+        if state_cat == "waiting":
+            # Cycle from 0 to 3 dots for waiting state
+            self.animation_frame = getattr(self, "animation_frame", 0) + 1
+            dots = "." * (self.animation_frame % 4)
+            try:
+                self.status_text.configure(text=f"{base_text}{dots}")
+            except Exception:
+                pass
+            self.status_animation_task = self.after(500, self.run_status_animation)
+        else:
+            # Static text for connected states (no trailing cycling dots)
+            try:
+                self.status_text.configure(text=base_text)
+            except Exception:
+                pass
+            # Slow check (1000ms) to monitor status changes with zero CPU usage
+            self.status_animation_task = self.after(1000, self.run_status_animation)
 
     def append_logs_to_ui(self, msgs):
         cleaned_msgs = []
@@ -924,6 +1053,8 @@ class DeviceLinkApp(ctk.CTk):
         self.after(50, lambda: self.attributes("-topmost", True))
         self.after(100, lambda: self.attributes("-topmost", False))
         self.after(150, self.focus_force)
+        self.after(200, lambda: self.refresh_connection_status(force=True))
+        self.after(250, self.trigger_status_animation)
 
     def quit_app(self):
         sys.stdout = original_stdout

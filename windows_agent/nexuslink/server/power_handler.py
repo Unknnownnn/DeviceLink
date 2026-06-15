@@ -25,6 +25,9 @@ async def handle_power_command(
     elif action == "shutdown":
         # Shutdown in 0 seconds
         os.system("shutdown /s /t 0")
+    elif action == "restart":
+        # Restart in 0 seconds
+        os.system("shutdown /r /t 0")
     else:
         log.warning("Unknown power action: %s", action)
 

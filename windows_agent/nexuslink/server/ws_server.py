@@ -25,6 +25,7 @@ from . import file_handler
 from . import agent_orchestrator
 from . import power_handler
 from . import call_handler
+from . import ping_handler
 from .firebase_relay import FirebaseRelay
 
 _firebase_relay: Optional[FirebaseRelay] = None
@@ -36,6 +37,7 @@ file_handler.register(registry)
 agent_orchestrator.register(registry)
 power_handler.register(registry)
 call_handler.register(registry)
+ping_handler.register(registry)
 
 active_peers = set()
 active_sessions = []
@@ -52,10 +54,20 @@ def get_firebase_status():
     return last_firebase_activity
 
 def get_cloud_relay_active():
+    global cloud_relay_active
+    if cloud_relay_active:
+        if time.time() - last_firebase_activity > 15.0:
+            log.info("Cloud relay timed out (no messages received for 15 seconds)")
+            if _loop:
+                _loop.call_soon_threadsafe(_set_cloud_relay_active, False)
+            else:
+                _set_cloud_relay_active(False)
     return cloud_relay_active
 
 def _set_cloud_relay_active(active: bool) -> None:
     global cloud_relay_active, last_firebase_activity, firebase_wants_logs, _firebase_relay, _cloud_clipboard_task
+    if cloud_relay_active == active:
+        return
     cloud_relay_active = active
     if active:
         last_firebase_activity = time.time()
@@ -76,6 +88,12 @@ def _set_cloud_relay_active(active: bool) -> None:
         if _cloud_clipboard_task is not None:
             _cloud_clipboard_task.cancel()
             _cloud_clipboard_task = None
+        # Notify GUI to refresh immediately
+        from gui import DeviceLinkApp
+        app = getattr(DeviceLinkApp, "_instance", None)
+        if app:
+            app.after(0, lambda: app.handle_cloud_relay_disconnect())
+
 
 async def handle_subscribe_logs(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
     global firebase_wants_logs
@@ -98,27 +116,11 @@ async def handle_subscribe_logs(msg: NexusMessage, cipher: SessionCipher, ws: We
 registry.register("subscribe_logs", handle_subscribe_logs)
 
 async def handle_request_sync(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
-    from nexuslink.settings_manager import SettingsManager
-    settings = SettingsManager()
-    shortcuts = settings.get_deck_shortcuts()
-    shortcuts_with_icons = []
-    for s in shortcuts:
-        s_copy = s.copy()
-        icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
-        if icon_b64:
-            s_copy["icon"] = icon_b64
-        shortcuts_with_icons.append(s_copy)
-
-    shortcuts_msg = NexusMessage(
-        type="sync_shortcuts",
-        payload={"shortcuts": shortcuts_with_icons}
-    )
-    
     if cipher and ws:
-        await ws.send(cipher.encrypt(shortcuts_msg.to_bytes()))
+        asyncio.create_task(send_shortcuts_and_icons(ws, cipher))
         await ws.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes()))
     elif _firebase_relay:
-        _firebase_relay.send_to_phone(shortcuts_msg.to_bytes())
+        asyncio.create_task(send_shortcuts_and_icons(None, None))
         _firebase_relay.send_to_phone(NexusMessage("request_contacts", {}).to_bytes())
 
 async def handle_cloud_disconnect(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
@@ -129,8 +131,14 @@ async def handle_cloud_disconnect(msg: NexusMessage, cipher: SessionCipher, ws: 
     if app:
         app.after(0, lambda: app.handle_cloud_relay_disconnect())
 
+async def handle_udp_disconnect(msg: NexusMessage, cipher: SessionCipher, ws) -> None:
+    log.info("UDP disconnect received from phone.")
+    import nexuslink.server.udp_server as udp_server
+    udp_server.active_udp_session = None
+
 registry.register("request_sync", handle_request_sync)
 registry.register("cloud_disconnect", handle_cloud_disconnect)
+registry.register("udp_disconnect", handle_udp_disconnect)
 
 def get_active_peers():
     return list(active_peers)
@@ -376,18 +384,49 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
     finally:
         user32.DestroyIcon(hicon)
 
-def sync_shortcuts_to_active_peers() -> None:
+async def send_shortcuts_and_icons(ws=None, cipher=None) -> None:
     from nexuslink.settings_manager import SettingsManager
+    from nexuslink.models import NexusMessage
     settings = SettingsManager()
     shortcuts = settings.get_deck_shortcuts()
-    shortcuts_with_icons = []
+    
+    # 1. Populate apps first without large base64 icons to display UI instantly
+    shortcuts_no_icons = []
     for s in shortcuts:
         s_copy = s.copy()
+        s_copy["icon"] = ""
+        shortcuts_no_icons.append(s_copy)
+        
+    shortcuts_msg = NexusMessage(
+        type="sync_shortcuts",
+        payload={"shortcuts": shortcuts_no_icons}
+    )
+    
+    if ws is not None:
+        if cipher is not None:
+            await ws.send(cipher.encrypt(shortcuts_msg.to_bytes()))
+    else:
+        await send_to_all_peers("sync_shortcuts", {"shortcuts": shortcuts_no_icons})
+        
+    # 2. Extract and send icons one by one asynchronously to pace network traffic
+    for s in shortcuts:
         icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
         if icon_b64:
-            s_copy["icon"] = icon_b64
-        shortcuts_with_icons.append(s_copy)
-    send_message_to_all_peers_sync("sync_shortcuts", {"shortcuts": shortcuts_with_icons})
+            # Short sleep to prevent network congestion/dropped packets over UDP
+            await asyncio.sleep(0.12)
+            icon_msg = NexusMessage(
+                type="sync_shortcut_icon",
+                payload={"id": s.get("id", ""), "icon": icon_b64}
+            )
+            if ws is not None:
+                if cipher is not None:
+                    await ws.send(cipher.encrypt(icon_msg.to_bytes()))
+            else:
+                await send_to_all_peers("sync_shortcut_icon", {"id": s.get("id", ""), "icon": icon_b64})
+
+def sync_shortcuts_to_active_peers() -> None:
+    if _loop:
+        asyncio.run_coroutine_threadsafe(send_shortcuts_and_icons(None, None), _loop)
 
 async def send_to_all_peers(msg_type: str, payload: dict) -> None:
     from nexuslink.models import NexusMessage
@@ -409,18 +448,14 @@ async def send_to_all_peers(msg_type: str, payload: dict) -> None:
             
     # 2. Try UDP connection
     import nexuslink.server.udp_server as udp_server
-    if not sent_via_channel and udp_server.active_udp_session:
+    active_udp = udp_server.get_active_udp_session()
+    if not sent_via_channel and active_udp and msg_type != "pc_log":
         try:
-            if msg_type == "pc_log" and udp_server.active_udp_session not in log_subscribers:
-                # Wait, log_subscribers contains websockets. If we want UDP logs:
-                # firebase_wants_logs / normal logs is fine.
-                pass
-            
-            cipher = udp_server.active_udp_session["cipher"]
+            cipher = active_udp["cipher"]
             frame = cipher.encrypt(data)
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, udp_server.active_udp_session["socket"].sendto, frame, udp_server.active_udp_session["addr"])
-            log.info("Sent message '%s' via UDP to %s", msg_type, udp_server.active_udp_session["addr"])
+            await loop.run_in_executor(None, lambda: active_udp["socket"].sendto(frame, active_udp["addr"]))
+            log.info("Sent message '%s' via UDP to %s", msg_type, active_udp["addr"])
             sent_via_channel = True
         except Exception as exc:
             log.error("Failed to send message to peer via UDP: %s", exc)
@@ -508,26 +543,8 @@ class NexusLinkServer:
         log.info("UDP Session active with %s. Sending sync requests...", addr)
         import nexuslink.server.udp_server as udp_server
         wrapper = udp_server.UdpSessionWrapper(udp_server._udp_manager.sock, addr, cipher)
-        
-        from nexuslink.settings_manager import SettingsManager
-        settings = SettingsManager()
-        shortcuts = settings.get_deck_shortcuts()
-        shortcuts_with_icons = []
-        for s in shortcuts:
-            s_copy = s.copy()
-            from nexuslink.server.ws_server import extract_shortcut_icon
-            icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
-            if icon_b64:
-                s_copy["icon"] = icon_b64
-            shortcuts_with_icons.append(s_copy)
-
-        shortcuts_msg = NexusMessage(
-            type="sync_shortcuts",
-            payload={"shortcuts": shortcuts_with_icons}
-        )
-        
         if _loop:
-            asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(shortcuts_msg.to_bytes())), _loop)
+            asyncio.run_coroutine_threadsafe(send_shortcuts_and_icons(wrapper, cipher), _loop)
             asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes())), _loop)
 
     def _on_firebase_message(self, plaintext: bytes):
@@ -605,22 +622,7 @@ class NexusLinkServer:
             active_peers.add(peer)
             active_sessions.append((websocket, cipher))
 
-            from nexuslink.settings_manager import SettingsManager
-            settings = SettingsManager()
-            shortcuts = settings.get_deck_shortcuts()
-            shortcuts_with_icons = []
-            for s in shortcuts:
-                s_copy = s.copy()
-                icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
-                if icon_b64:
-                    s_copy["icon"] = icon_b64
-                shortcuts_with_icons.append(s_copy)
-
-            shortcuts_msg = NexusMessage(
-                type="sync_shortcuts",
-                payload={"shortcuts": shortcuts_with_icons}
-            )
-            await websocket.send(cipher.encrypt(shortcuts_msg.to_bytes()))
+            asyncio.create_task(send_shortcuts_and_icons(websocket, cipher))
 
             # Request contacts from the phone
             contacts_req = NexusMessage(

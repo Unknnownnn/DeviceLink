@@ -35,10 +35,16 @@ async def handle_ping(
             "server_ts": time.time(),
         },
     )
-    frame = cipher.encrypt(pong.to_bytes())
-    await websocket.send(frame)
-
-    log.info("PONG sent [ref=%s]", msg.id)
+    if cipher and websocket:
+        frame = cipher.encrypt(pong.to_bytes())
+        await websocket.send(frame)
+        log.info("PONG sent via WebSocket/UDP [ref=%s]", msg.id)
+    else:
+        import nexuslink.server.ws_server as ws_server
+        relay = getattr(ws_server, "_firebase_relay", None)
+        if relay:
+            relay.send_to_phone(pong.to_bytes())
+            log.info("PONG sent via Firebase [ref=%s]", msg.id)
 
 
 def register(registry) -> None:

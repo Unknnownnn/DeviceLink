@@ -90,5 +90,17 @@ async def _send_error(
         type=MsgType.ERROR,
         payload={"error": error_msg, "ref": ref_id},
     )
-    frame = cipher.encrypt(resp.to_bytes())
-    await websocket.send(frame)
+    if cipher:
+        frame = cipher.encrypt(resp.to_bytes())
+        if websocket and hasattr(websocket, "send"):
+            await websocket.send(frame)
+        else:
+            import nexuslink.server.ws_server as ws_server
+            relay = getattr(ws_server, "_firebase_relay", None)
+            if relay:
+                relay.send_to_phone(resp.to_bytes())
+    else:
+        import nexuslink.server.ws_server as ws_server
+        relay = getattr(ws_server, "_firebase_relay", None)
+        if relay:
+            relay.send_to_phone(resp.to_bytes())

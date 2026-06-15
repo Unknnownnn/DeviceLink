@@ -95,6 +95,10 @@ class NexusUdpClient(
             val payload = buffer.array()
             
             val stunServers = listOf(
+                Pair("173.194.202.127", 19302),
+                Pair("74.125.143.127", 19302),
+                Pair("108.177.119.127", 19302),
+                Pair("54.172.47.199", 3478),
                 Pair("stun.l.google.com", 19302),
                 Pair("stun1.l.google.com", 19302),
                 Pair("stun.chat.twilio.com", 3478),
@@ -110,6 +114,7 @@ class NexusUdpClient(
                 for (server in stunServers) {
                     scope.launch(Dispatchers.IO) {
                         try {
+                            // If the server string is already an IP, getByName returns it instantly
                             val addresses = InetAddress.getAllByName(server.first)
                             val ip = addresses.firstOrNull { it is java.net.Inet4Address }
                             if (ip == null) {
@@ -127,7 +132,7 @@ class NexusUdpClient(
                 delay(1200)
                 synchronized(stunLock) {
                     if (stunResult != null) {
-                        return stunResult
+                        return@queryStun stunResult
                     }
                 }
             }
@@ -189,7 +194,7 @@ class NexusUdpClient(
                         Log.i(TAG, "STUN Parse: Decoded MAPPED-ADDRESS: $ip:$port")
                         return
                     }
-                } else if (attrType == 0x0020) { // XOR-MAPPED-ADDRESS
+                } else if (attrType == 0x0020 || attrType == 0x8020) { // XOR-MAPPED-ADDRESS
                     resp.position(pos)
                     val unused = resp.get()
                     val family = resp.get().toInt()
