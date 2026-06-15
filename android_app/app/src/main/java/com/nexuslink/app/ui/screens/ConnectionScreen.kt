@@ -30,6 +30,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.layout.LookaheadScope
@@ -73,11 +75,11 @@ fun ConnectionScreen(
     viewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val btConnected by viewModel.bluetoothConnected.collectAsState()
     val context = LocalContext.current
 
     var nlpPrompt by remember { mutableStateOf("") }
     var nlpResponseDialogText by remember { mutableStateOf<String?>(null) }
+    var showChatHistoryDialog by remember { mutableStateOf(false) }
 
     // ── Runtime permissions for phone state, calls & contacts ──────────────────────
     val permissionsLauncher = rememberLauncherForActivityResult(
@@ -139,28 +141,6 @@ fun ConnectionScreen(
                     titleContentColor = OnSurface
                 ),
                 actions = {
-                    // Bluetooth HFP status pill
-                    val btColor = if (btConnected) Color(0xFF10B981) else Color(0xFF64748B)
-                    val btLabel = if (btConnected) "BT" else "BT Off"
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = btColor.copy(alpha = 0.18f),
-                        modifier = Modifier.padding(end = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(btColor)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(btLabel, color = btColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
                     IconButton(onClick = {
                         viewModel.disconnect()
                         onDisconnect()
@@ -271,17 +251,31 @@ fun ConnectionScreen(
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(8.dp))
-                                        Button(
-                                            onClick = {
-                                                if (nlpPrompt.isNotBlank()) {
-                                                    viewModel.sendNlpCommand(nlpPrompt)
-                                                    nlpPrompt = ""
-                                                }
-                                            },
+                                        Row(
                                             modifier = Modifier.fillMaxWidth(),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Rose500)
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text("Execute")
+                                            Button(
+                                                onClick = {
+                                                    if (nlpPrompt.isNotBlank()) {
+                                                        viewModel.sendNlpCommand(nlpPrompt)
+                                                        nlpPrompt = ""
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Rose500)
+                                            ) {
+                                                Text("Execute")
+                                            }
+                                            Button(
+                                                onClick = {
+                                                    showChatHistoryDialog = true
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Surface600)
+                                            ) {
+                                                Text("Chat History")
+                                            }
                                         }
                                     }
                                     "Apps" -> {
@@ -439,15 +433,127 @@ fun ConnectionScreen(
     }
 
     if (nlpResponseDialogText != null) {
+        val hasError = remember(nlpResponseDialogText) {
+            val txt = nlpResponseDialogText!!.lowercase()
+            txt.contains("error") || txt.contains("failed") || txt.contains("timeout") || txt.contains("failure") || txt.contains("prohibited")
+        }
         AlertDialog(
             onDismissRequest = { nlpResponseDialogText = null },
             title = { Text("AI Execution Result") },
             text = { Text(nlpResponseDialogText ?: "") },
+            dismissButton = if (hasError) {
+                {
+                    TextButton(onClick = {
+                        viewModel.retryLastNlpCommand()
+                        nlpResponseDialogText = null
+                    }) {
+                        Text("Retry", color = Rose400)
+                    }
+                }
+            } else null,
             confirmButton = {
                 TextButton(onClick = { nlpResponseDialogText = null }) {
                     Text("Close")
                 }
             }
+        )
+    }
+
+    if (showChatHistoryDialog) {
+        val chatHistory by viewModel.aiChatHistory.collectAsState()
+        AlertDialog(
+            onDismissRequest = { showChatHistoryDialog = false },
+            title = { Text("AI Chat History", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(350.dp)
+                ) {
+                    if (chatHistory.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No chat history in this session", color = OnSurfaceDim)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(chatHistory) { chat ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Surface800, RoundedCornerShape(8.dp))
+                                        .border(1.dp, Surface600, RoundedCornerShape(8.dp))
+                                        .padding(12.dp)
+                                ) {
+                                    Text(
+                                        text = "Prompt:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Rose400,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = chat.prompt,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(bottom = 8.dp)
+                                    )
+                                    
+                                    HorizontalDivider(color = Surface600.copy(alpha = 0.5f))
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    
+                                    Text(
+                                        text = "Response:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Blue400,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    val isErr = remember(chat.response) {
+                                        val txt = chat.response.lowercase()
+                                        txt.contains("error") || txt.contains("failed") || txt.contains("timeout") || txt.contains("failure") || txt.contains("prohibited")
+                                    }
+                                    Text(
+                                        text = chat.response,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (isErr) Rose400 else OnSurfaceDim
+                                    )
+                                    if (isErr) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        TextButton(
+                                            onClick = {
+                                                viewModel.sendNlpCommand(chat.prompt)
+                                                showChatHistoryDialog = false
+                                            },
+                                            contentPadding = PaddingValues(0.dp)
+                                        ) {
+                                            Text("Retry this command", color = Rose400, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showChatHistoryDialog = false }) {
+                    Text("Close")
+                }
+            },
+            dismissButton = if (chatHistory.isNotEmpty()) {
+                {
+                    TextButton(onClick = {
+                        viewModel.clearChatHistory()
+                    }) {
+                        Text("Clear History", color = Rose400)
+                    }
+                }
+            } else null,
+            containerColor = Surface900
         )
     }
 }

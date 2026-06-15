@@ -31,6 +31,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nexuslink.app.data.NexusDevice
 import com.nexuslink.app.network.ConnectionState
 import com.nexuslink.app.ui.theme.*
@@ -65,11 +68,42 @@ fun DeviceListScreen(
     val updater = remember { GitHubUpdater(context) }
     val updaterState by updater.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val updatePromptSnoozeUntilMs by viewModel.preferencesManager.updatePromptSnoozeUntilMs.collectAsState()
 
-    // Check for updates automatically on app startup (only once per session)
+    var showUpdatePopup by remember { mutableStateOf(false) }
+    var updateCheckInFlight by remember { mutableStateOf(false) }
+
+    fun requestUpdateCheck() {
+        val now = System.currentTimeMillis()
+        if (updateCheckInFlight || viewModel.preferencesManager.isUpdatePromptSnoozed(now)) {
+            return
+        }
+
+        updateCheckInFlight = true
+        updater.resetState()
+        scope.launch {
+            try {
+                updater.checkForUpdates(force = true)
+            } finally {
+                updateCheckInFlight = false
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
-        if (!GitHubUpdater.hasCheckedThisSession) {
-            updater.checkForUpdates(force = false)
+        requestUpdateCheck()
+    }
+
+    DisposableEffect(lifecycleOwner, updatePromptSnoozeUntilMs) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                requestUpdateCheck()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -98,14 +132,18 @@ fun DeviceListScreen(
         }
     }
 
-    // Modal popup if a new update is found on GitHub (and ONLY then, once per session)
-    var showUpdatePopup by remember { mutableStateOf(!GitHubUpdater.hasDismissedPopupThisSession) }
     val currentUpdaterState = updaterState
+    LaunchedEffect(currentUpdaterState) {
+        if (currentUpdaterState is UpdaterState.UpdateAvailable && !viewModel.preferencesManager.isUpdatePromptSnoozed()) {
+            showUpdatePopup = true
+        }
+    }
+
     if (showUpdatePopup && currentUpdaterState is UpdaterState.UpdateAvailable) {
         AlertDialog(
             onDismissRequest = { 
                 showUpdatePopup = false
-                GitHubUpdater.hasDismissedPopupThisSession = true
+                viewModel.preferencesManager.snoozeUpdatePrompt()
             },
             title = {
                 Text(
@@ -126,7 +164,6 @@ fun DeviceListScreen(
                 Button(
                     onClick = {
                         showUpdatePopup = false
-                        GitHubUpdater.hasDismissedPopupThisSession = true
                         scope.launch {
                             updater.downloadAndInstall(currentUpdaterState.downloadUrl)
                         }
@@ -140,7 +177,7 @@ fun DeviceListScreen(
                 TextButton(
                     onClick = { 
                         showUpdatePopup = false
-                        GitHubUpdater.hasDismissedPopupThisSession = true
+                        viewModel.preferencesManager.snoozeUpdatePrompt()
                     }
                 ) {
                     Text("Later", color = OnSurfaceDim)

@@ -59,8 +59,21 @@ class ConnectionViewModel @Inject constructor(
         connectionManager.pushClipboardToPc()
     }
 
+    private val _aiChatHistory = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val aiChatHistory: StateFlow<List<ChatMessage>> = _aiChatHistory
+
+    var lastNlpPrompt: String? = null
+        private set
+
     init {
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+        viewModelScope.launch {
+            nlpResponses.collect { response ->
+                val prompt = lastNlpPrompt ?: "AI Command"
+                val newMsg = ChatMessage(prompt, response)
+                _aiChatHistory.update { it + newMsg }
+            }
+        }
     }
 
     fun connect(host: String, port: Int, peerFingerprint: String) {
@@ -78,9 +91,19 @@ class ConnectionViewModel @Inject constructor(
     }
 
     fun sendNlpCommand(prompt: String) {
+        lastNlpPrompt = prompt
         val payload = org.json.JSONObject().apply { put("prompt", prompt) }
         connectionManager.sendMessage("nlp_command", payload)
         viewModelScope.launch { connectionManager.emitToast("Sending AI command...") }
+    }
+
+    fun retryLastNlpCommand() {
+        val prompt = lastNlpPrompt ?: return
+        sendNlpCommand(prompt)
+    }
+
+    fun clearChatHistory() {
+        _aiChatHistory.value = emptyList()
     }
 
     fun sendPowerCommand(action: String) {
@@ -120,3 +143,9 @@ class ConnectionViewModel @Inject constructor(
         // the connection to persist in the background Foreground Service.
     }
 }
+
+data class ChatMessage(
+    val prompt: String,
+    val response: String,
+    val timestamp: Long = System.currentTimeMillis()
+)

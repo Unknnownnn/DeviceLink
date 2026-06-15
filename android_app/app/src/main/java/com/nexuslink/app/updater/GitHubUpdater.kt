@@ -39,11 +39,6 @@ class GitHubUpdater(
         }
     }
 
-    companion object {
-        var hasCheckedThisSession = false
-        var hasDismissedPopupThisSession = false
-    }
-
     private val _state = MutableStateFlow<UpdaterState>(UpdaterState.Idle)
     val state: StateFlow<UpdaterState> = _state
 
@@ -52,9 +47,6 @@ class GitHubUpdater(
     }
 
     suspend fun checkForUpdates(force: Boolean = false) {
-        if (!force && hasCheckedThisSession) {
-            return
-        }
         _state.value = UpdaterState.Checking
         val url = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
         
@@ -103,8 +95,6 @@ class GitHubUpdater(
                 }
             } catch (e: Exception) {
                 _state.value = UpdaterState.Error(e.message ?: "Failed to check for updates.")
-            } finally {
-                hasCheckedThisSession = true
             }
         }
     }

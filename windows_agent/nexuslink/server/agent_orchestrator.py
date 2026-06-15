@@ -408,6 +408,126 @@ class SanitizationSandbox:
         EnumWindows(EnumWindowsProc(foreach_window), 0)
         return closed_count[0]
 
+    # ── Process listing & killing ──────────────────────────────────────────────
+
+    # Blocked process names that should never be listed or killed
+    BLOCKED_PROCESS_NAMES = {
+        "system", "system idle process", "system interrupts", "registry",
+        "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+        "services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
+        "ntoskrnl.exe", "hal.dll", "winload.exe", "bootmgr.exe",
+        "conhost.exe", "fontdrvhost.exe", "sihost.exe",
+        "taskhostw.exe", "dllhost.exe", "ctfmon.exe",
+        "securityhealthservice.exe", "securityhealthsystray.exe",
+    }
+
+    def list_processes(self, filter_name: str = "") -> str:
+        """
+        Lists running processes, optionally filtered by name.
+        Returns a numbered list with PID and process name.
+        """
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, shell=False, timeout=10
+            )
+            if result.returncode != 0:
+                return f"Failed to list processes: {result.stderr.strip()}"
+
+            lines = result.stdout.strip().splitlines()
+            processes = []
+            for line in lines:
+                parts = line.strip().strip('"').split('","')
+                if len(parts) >= 2:
+                    name = parts[0].strip()
+                    pid = parts[1].strip()
+                    mem = parts[4].strip() if len(parts) > 4 else "?"
+                    name_lower = name.lower()
+                    # Skip blocked system-critical processes
+                    if name_lower in self.BLOCKED_PROCESS_NAMES:
+                        continue
+                    # Skip very short PIDs or empty
+                    if not pid.isdigit():
+                        continue
+                    # Apply filter if provided
+                    if filter_name and filter_name.lower() not in name_lower:
+                        continue
+                    processes.append({"pid": int(pid), "name": name, "mem": mem})
+
+            if not processes:
+                if filter_name:
+                    return f"No processes found matching '{filter_name}'."
+                return "No processes found."
+
+            # Build numbered output
+            lines_out = []
+            for i, p in enumerate(processes, 1):
+                lines_out.append(f"{i}. PID {p['pid']}  {p['name']}  ({p['mem']})")
+
+            header = f"Found {len(processes)} process(es)"
+            if filter_name:
+                header += f" matching '{filter_name}'"
+            header += ":\n"
+            return header + "\n".join(lines_out)
+
+        except subprocess.TimeoutExpired:
+            return "Failed to list processes: command timed out."
+        except Exception as e:
+            return f"Failed to list processes: {e}"
+
+    def kill_processes(self, pids_or_names: str) -> str:
+        """
+        Kills one or more processes by PID or name.
+        pids_or_names is a comma-separated list of PIDs (integers) or process names.
+        """
+        try:
+            items = [item.strip() for item in pids_or_names.split(",") if item.strip()]
+            if not items:
+                return "Error: no PIDs or names provided."
+
+            results = []
+            for item in items:
+                # Check if it's a PID (integer)
+                if item.isdigit():
+                    pid = int(item)
+                    try:
+                        res = subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True, text=True, shell=False, timeout=10
+                        )
+                        if res.returncode == 0:
+                            results.append(f"Killed PID {pid}")
+                        else:
+                            results.append(f"Could not kill PID {pid}: {res.stderr.strip()}")
+                    except subprocess.TimeoutExpired:
+                        results.append(f"Timeout killing PID {pid}")
+                    except Exception as e:
+                        results.append(f"Error killing PID {pid}: {e}")
+                else:
+                    # It's a process name
+                    name_lower = item.lower()
+                    if name_lower in self.BLOCKED_PROCESS_NAMES:
+                        results.append(f"Blocked: cannot kill system-critical process '{item}'")
+                        continue
+                    try:
+                        res = subprocess.run(
+                            ["taskkill", "/F", "/IM", item],
+                            capture_output=True, text=True, shell=False, timeout=10
+                        )
+                        if res.returncode == 0:
+                            results.append(f"Killed process '{item}'")
+                        else:
+                            results.append(f"Could not kill '{item}': {res.stderr.strip()}")
+                    except subprocess.TimeoutExpired:
+                        results.append(f"Timeout killing '{item}'")
+                    except Exception as e:
+                        results.append(f"Error killing '{item}': {e}")
+
+            return "\n".join(results)
+
+        except Exception as e:
+            return f"Failed to kill processes: {e}"
+
 
 class OpenRouterAgent:
     TOOLS_SCHEMA = [
@@ -497,12 +617,48 @@ class OpenRouterAgent:
                     "required": ["name"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_processes",
+                "description": "List currently running processes on the system, optionally filtered by name. Returns a numbered list with PID, process name, and memory usage. Use this when the user wants to see or close background processes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filter_name": {
+                            "type": "string",
+                            "description": "Optional keyword to filter processes by name (e.g. 'adobe', 'chrome'). Leave empty to list all processes."
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "kill_processes",
+                "description": "Kill one or more running processes by PID or process name. Accepts a comma-separated list of PIDs (numbers) or process names (e.g. '1234,5678' or 'photoshop.exe,illustrator.exe'). IMPORTANT: When the user refers to numbered items from a previous list_processes result, you MUST resolve those numbers to the actual PIDs before calling this tool. Do NOT pass the list numbers themselves.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pids_or_names": {
+                            "type": "string",
+                            "description": "Comma-separated PIDs or process names to kill (e.g. '1234,5678' or 'photoshop.exe'). When the user picks numbers from a list_processes result, resolve them to the actual PIDs first."
+                        }
+                    },
+                    "required": ["pids_or_names"]
+                }
+            }
         }
     ]
 
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.sandbox = SanitizationSandbox()
+        self._conversation_history: List[Dict[str, Any]] = []
+        self._max_history_messages = 30 
 
     async def execute_command(self, prompt: str) -> str:
         settings = SettingsManager()
@@ -526,15 +682,25 @@ class OpenRouterAgent:
         
         system_instructions = (
             "You are a secure Windows automation assistant. You can launch local programs, search for files/apps, "
-            "and open web URLs. To launch an app/game, first call search_for_application to locate it if you don't "
+            "open web URLs, list running processes, and kill processes.\n\n"
+            "PROCESS MANAGEMENT FLOW:\n"
+            "When the user asks to close/kill/stop processes (e.g. 'close all adobe processes'):\n"
+            "1. Call list_processes with a filter_name matching what the user asked for.\n"
+            "2. Present the numbered list to the user and ask which ones to close.\n"
+            "3. When the user replies with numbers (e.g. '1, 3, 5'), resolve those numbers "
+            "to the actual PIDs from the list you just showed, then call kill_processes with those PIDs.\n"
+            "4. NEVER pass the list index numbers to kill_processes — always resolve them to real PIDs first.\n\n"
+            "APP LAUNCH FLOW:\n"
+            "To launch an app/game, first call search_for_application to locate it if you don't "
             "know the exact absolute path. Once you have the path from the search results, call launch_application "
             "passing the full path. Do NOT just output the search results to the user; proceed to launch the program."
         )
         
-        messages = [
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": prompt}
-        ]
+        # Append the new user message to conversation history
+        self._conversation_history.append({"role": "user", "content": prompt})
+
+        # Build the messages list: system + conversation history
+        messages = [{"role": "system", "content": system_instructions}] + list(self._conversation_history)
 
         max_iterations = 5
         iteration = 0
@@ -573,10 +739,14 @@ class OpenRouterAgent:
                         if message.get("tool_calls"):
                             assistant_msg["tool_calls"] = message.get("tool_calls")
                         messages.append(assistant_msg)
+                        self._conversation_history.append(assistant_msg)
                         
                         tool_calls = message.get("tool_calls", [])
                         if not tool_calls:
                             # No more tool calls, return the text content
+                            # Trim conversation history to prevent unbounded growth
+                            if len(self._conversation_history) > self._max_history_messages:
+                                self._conversation_history = self._conversation_history[-self._max_history_messages:]
                             return message.get("content", "Command processed successfully.")
                         
                         tool_results = []
@@ -605,6 +775,10 @@ class OpenRouterAgent:
                                 res = self.sandbox.close_application(args.get("target", ""))
                             elif name == "search_for_application":
                                 res = self.sandbox.search_for_application(args.get("name", ""))
+                            elif name == "list_processes":
+                                res = self.sandbox.list_processes(args.get("filter_name", ""))
+                            elif name == "kill_processes":
+                                res = self.sandbox.kill_processes(args.get("pids_or_names", ""))
                             else:
                                 res = f"Security Alert: Model attempted to call unauthorized tool '{name}'"
                             
@@ -618,10 +792,14 @@ class OpenRouterAgent:
                                 "content": str(res)
                             }
                             messages.append(tool_msg)
+                            self._conversation_history.append(tool_msg)
                         
                         last_tool_output = "\n".join(tool_results)
                 
                 # If we hit max iterations, return the last tool's output
+                # Trim conversation history
+                if len(self._conversation_history) > self._max_history_messages:
+                    self._conversation_history = self._conversation_history[-self._max_history_messages:]
                 return last_tool_output
 
         except Exception as e:
