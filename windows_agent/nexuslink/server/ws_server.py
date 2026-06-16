@@ -26,6 +26,7 @@ from . import agent_orchestrator
 from . import power_handler
 from . import call_handler
 from . import ping_handler
+from . import phone_status_handler
 from .firebase_relay import FirebaseRelay
 
 _firebase_relay: Optional[FirebaseRelay] = None
@@ -38,6 +39,7 @@ agent_orchestrator.register(registry)
 power_handler.register(registry)
 call_handler.register(registry)
 ping_handler.register(registry)
+phone_status_handler.register(registry)
 
 active_peers = set()
 active_sessions = []
@@ -89,8 +91,8 @@ def _set_cloud_relay_active(active: bool) -> None:
             _cloud_clipboard_task.cancel()
             _cloud_clipboard_task = None
         # Notify GUI to refresh immediately
-        from gui import DeviceLinkApp
-        app = getattr(DeviceLinkApp, "_instance", None)
+        from .handlers import get_app_instance
+        app = get_app_instance()
         if app:
             app.after(0, lambda: app.handle_cloud_relay_disconnect())
 
@@ -119,15 +121,17 @@ async def handle_request_sync(msg: NexusMessage, cipher: SessionCipher, ws: WebS
     if cipher and ws:
         asyncio.create_task(send_shortcuts_and_icons(ws, cipher))
         await ws.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes()))
+        await ws.send(cipher.encrypt(NexusMessage("request_phone_status", {}).to_bytes()))
     elif _firebase_relay:
         asyncio.create_task(send_shortcuts_and_icons(None, None))
         _firebase_relay.send_to_phone(NexusMessage("request_contacts", {}).to_bytes())
+        _firebase_relay.send_to_phone(NexusMessage("request_phone_status", {}).to_bytes())
 
 async def handle_cloud_disconnect(msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol) -> None:
     log.info("Cloud relay disconnect received from phone.")
     _set_cloud_relay_active(False)
-    from gui import DeviceLinkApp
-    app = getattr(DeviceLinkApp, "_instance", None)
+    from .handlers import get_app_instance
+    app = get_app_instance()
     if app:
         app.after(0, lambda: app.handle_cloud_relay_disconnect())
 
@@ -546,6 +550,7 @@ class NexusLinkServer:
         if _loop:
             asyncio.run_coroutine_threadsafe(send_shortcuts_and_icons(wrapper, cipher), _loop)
             asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(NexusMessage("request_contacts", {}).to_bytes())), _loop)
+            asyncio.run_coroutine_threadsafe(wrapper.send(cipher.encrypt(NexusMessage("request_phone_status", {}).to_bytes())), _loop)
 
     def _on_firebase_message(self, plaintext: bytes):
         global last_firebase_activity
@@ -624,12 +629,18 @@ class NexusLinkServer:
 
             asyncio.create_task(send_shortcuts_and_icons(websocket, cipher))
 
-            # Request contacts from the phone
+            # Request contacts and status from the phone
             contacts_req = NexusMessage(
                 type="request_contacts",
                 payload={}
             )
             await websocket.send(cipher.encrypt(contacts_req.to_bytes()))
+
+            status_req = NexusMessage(
+                type="request_phone_status",
+                payload={}
+            )
+            await websocket.send(cipher.encrypt(status_req.to_bytes()))
 
             await self._run_session(websocket, cipher)
 

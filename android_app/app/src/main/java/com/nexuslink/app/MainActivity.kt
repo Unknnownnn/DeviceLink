@@ -29,6 +29,35 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Request core permissions immediately on app launch
+        val perms = mutableListOf(
+            android.Manifest.permission.READ_PHONE_STATE,
+            android.Manifest.permission.READ_CONTACTS,
+            android.Manifest.permission.CALL_PHONE,
+            android.Manifest.permission.READ_CALL_LOG,
+            android.Manifest.permission.READ_SMS,
+            android.Manifest.permission.CAMERA
+        )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            perms.add("android.permission.ANSWER_PHONE_CALLS")
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.S_V2) { // Android 12L and lower
+            perms.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            perms.add("android.permission.BLUETOOTH_CONNECT")
+            perms.add("android.permission.BLUETOOTH_SCAN")
+        }
+
+        val permissionLauncher = registerForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { }
+        permissionLauncher.launch(perms.toTypedArray())
+
         setContent {
             NexusLinkTheme {
                 val navController = rememberNavController()

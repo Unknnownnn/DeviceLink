@@ -3,7 +3,7 @@ from websockets.server import WebSocketServerProtocol
 
 from nexuslink.crypto.session import SessionCipher
 from nexuslink.models import NexusMessage
-from nexuslink.server.handlers import HandlerRegistry
+from nexuslink.server.handlers import HandlerRegistry, get_app_instance
 
 log = logging.getLogger("nexuslink.call")
 
@@ -14,8 +14,7 @@ async def handle_incoming_call(
     name = msg.payload.get("name", "Unknown Caller")
     log.info("Incoming call from %s (%s)", name, number)
 
-    from gui import DeviceLinkApp
-    app = getattr(DeviceLinkApp, "_instance", None)
+    app = get_app_instance()
     if app:
         app.after(0, lambda: app.show_call_overlay(number, name))
     else:
@@ -27,8 +26,7 @@ async def handle_call_status(
     status = msg.payload.get("status") 
     log.info("Call status update: %s", status)
 
-    from gui import DeviceLinkApp
-    app = getattr(DeviceLinkApp, "_instance", None)
+    app = get_app_instance()
     if app:
         app.after(0, lambda: app.handle_call_status_change(status))
 
@@ -38,8 +36,7 @@ async def handle_sync_contacts(
     contacts = msg.payload.get("contacts", [])
     log.info("Received %d contacts from phone", len(contacts))
 
-    from gui import DeviceLinkApp
-    app = getattr(DeviceLinkApp, "_instance", None)
+    app = get_app_instance()
     if app:
         app.after(0, lambda: app.handle_sync_contacts(contacts))
 
@@ -49,8 +46,7 @@ async def handle_bt_status(
     connected = msg.payload.get("connected", False)
     log.info("Bluetooth connection status update: %s", connected)
 
-    from gui import DeviceLinkApp
-    app = getattr(DeviceLinkApp, "_instance", None)
+    app = get_app_instance()
     if app:
         app.after(0, lambda: app.handle_bt_status_change(connected))
 

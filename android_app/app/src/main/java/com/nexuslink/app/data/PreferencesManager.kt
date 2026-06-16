@@ -28,6 +28,18 @@ class PreferencesManager @Inject constructor(
     private val _updatePromptSnoozeUntilMs = MutableStateFlow(prefs.getLong(UPDATE_PROMPT_SNOOZE_UNTIL_MS, 0L))
     val updatePromptSnoozeUntilMs: StateFlow<Long> = _updatePromptSnoozeUntilMs
 
+    private val _batterySaverEnabled = MutableStateFlow(prefs.getBoolean("battery_saver_enabled", false))
+    val batterySaverEnabled: StateFlow<Boolean> = _batterySaverEnabled
+
+    private val _bgLaunchEnabled = MutableStateFlow(prefs.getBoolean("bg_launch_enabled", true))
+    val bgLaunchEnabled: StateFlow<Boolean> = _bgLaunchEnabled
+
+    private val _notifSyncEnabled = MutableStateFlow(prefs.getBoolean("notif_sync_enabled", true))
+    val notifSyncEnabled: StateFlow<Boolean> = _notifSyncEnabled
+
+    private val _phoneSyncEnabled = MutableStateFlow(prefs.getBoolean("phone_sync_enabled", true))
+    val phoneSyncEnabled: StateFlow<Boolean> = _phoneSyncEnabled
+
     fun setAutoConnectEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("auto_connect_enabled", enabled).apply()
         _autoConnectEnabled.value = enabled
@@ -46,5 +58,37 @@ class PreferencesManager @Inject constructor(
 
     fun isUpdatePromptSnoozed(nowMs: Long = System.currentTimeMillis()): Boolean {
         return nowMs < _updatePromptSnoozeUntilMs.value
+    }
+
+    fun setBatterySaverEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("battery_saver_enabled", enabled).apply()
+        _batterySaverEnabled.value = enabled
+    }
+
+    fun setBgLaunchEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("bg_launch_enabled", enabled).apply()
+        _bgLaunchEnabled.value = enabled
+    }
+
+    fun setNotifSyncEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("notif_sync_enabled", enabled).apply()
+        _notifSyncEnabled.value = enabled
+    }
+
+    fun setPhoneSyncEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("phone_sync_enabled", enabled).apply()
+        _phoneSyncEnabled.value = enabled
+    }
+
+    fun isBgLaunchActive(): Boolean {
+        return !_batterySaverEnabled.value && _bgLaunchEnabled.value
+    }
+
+    fun isNotifSyncActive(): Boolean {
+        return !_batterySaverEnabled.value && _notifSyncEnabled.value
+    }
+
+    fun isPhoneSyncActive(): Boolean {
+        return !_batterySaverEnabled.value && _phoneSyncEnabled.value
     }
 }

@@ -651,6 +651,43 @@ class OpenRouterAgent:
                     "required": ["pids_or_names"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "control_android_device",
+                "description": "Send control commands to the connected Android mobile device (e.g. launch apps like WhatsApp/Instagram, toggle flashlight/torch, change volume).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["launch_app", "toggle_torch", "volume_control"],
+                            "description": "The control action to execute on the Android device."
+                        },
+                        "package_or_app_name": {
+                            "type": "string",
+                            "description": "The package name or app name to launch (required only if action is 'launch_app')."
+                        },
+                        "state": {
+                            "type": "boolean",
+                            "description": "The boolean state to set (required only if action is 'toggle_torch')."
+                        },
+                        "stream": {
+                            "type": "string",
+                            "enum": ["media", "ring"],
+                            "description": "The volume stream to adjust (required only if action is 'volume_control')."
+                        },
+                        "volume_level": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "Volume percentage level from 0 to 100 (required only if action is 'volume_control')."
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
         }
     ]
 
@@ -681,8 +718,9 @@ class OpenRouterAgent:
         }
         
         system_instructions = (
-            "You are a secure Windows automation assistant. You can launch local programs, search for files/apps, "
-            "open web URLs, list running processes, and kill processes.\n\n"
+            "You are a secure automation assistant. You can automate tasks on this Windows PC (launch programs, search for files, "
+            "open URLs, list/kill processes) and also control the user's connected Android device (launch apps, toggle flashlight/torch, "
+            "control ring/media volume) using the control_android_device tool.\n\n"
             "PROCESS MANAGEMENT FLOW:\n"
             "When the user asks to close/kill/stop processes (e.g. 'close all adobe processes'):\n"
             "1. Call list_processes with a filter_name matching what the user asked for.\n"
@@ -693,7 +731,10 @@ class OpenRouterAgent:
             "APP LAUNCH FLOW:\n"
             "To launch an app/game, first call search_for_application to locate it if you don't "
             "know the exact absolute path. Once you have the path from the search results, call launch_application "
-            "passing the full path. Do NOT just output the search results to the user; proceed to launch the program."
+            "passing the full path. Do NOT just output the search results to the user; proceed to launch the program.\n\n"
+            "PRIVACY GUARDRAIL:\n"
+            "You have absolutely NO access to the user's notifications, SMS messages, contacts, or call logs. "
+            "Under no circumstances should you ever ask for, inspect, log, or process any notification or personal tray data."
         )
         
         # Append the new user message to conversation history
@@ -779,6 +820,17 @@ class OpenRouterAgent:
                                 res = self.sandbox.list_processes(args.get("filter_name", ""))
                             elif name == "kill_processes":
                                 res = self.sandbox.kill_processes(args.get("pids_or_names", ""))
+                            elif name == "control_android_device":
+                                from nexuslink.server.ws_server import send_to_all_peers
+                                payload_data = {
+                                    "action": args.get("action"),
+                                    "package_or_app_name": args.get("package_or_app_name") or args.get("package") or args.get("app_name") or args.get("name"),
+                                    "state": args.get("state"),
+                                    "stream": args.get("stream"),
+                                    "volume_level": args.get("volume_level") or args.get("level") or args.get("volume")
+                                }
+                                await send_to_all_peers("android_action", payload_data)
+                                res = f"Successfully sent remote action request '{args.get('action')}' to Android device."
                             else:
                                 res = f"Security Alert: Model attempted to call unauthorized tool '{name}'"
                             

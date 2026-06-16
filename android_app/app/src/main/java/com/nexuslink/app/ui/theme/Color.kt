@@ -22,6 +22,7 @@ val Emerald500 = Color(0xFF10B981)
 
 val Rose500 = Color(0xFFF43F5E)
 val Rose400 = Color(0xFFFB7185)
+val Rose900 = Color(0xFF4C0519)
 
 val Surface900  = Color(0xFF0D0A1A)
 val Surface800  = Color(0xFF12102A)

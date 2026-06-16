@@ -24,6 +24,16 @@ from nexuslink.crypto import SessionCipher
 
 log = logging.getLogger("nexuslink.handlers")
 
+_app_instance = None
+
+def register_app_instance(app):
+    global _app_instance
+    _app_instance = app
+    log.info("Registered active GUI app instance: %s", app)
+
+def get_app_instance():
+    return _app_instance
+
 HandlerFn = Callable[
     [NexusMessage, SessionCipher, object],  
     Awaitable[None],

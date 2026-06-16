@@ -2,6 +2,7 @@ import sys
 import queue
 import logging
 import socket
+import time
 
 for h in logging.root.handlers[:]:
     logging.root.removeHandler(h)
@@ -46,6 +47,8 @@ logging.root.setLevel(logging.INFO)
 import threading
 import asyncio
 import customtkinter as ctk
+import math
+import random
 import pystray
 from PIL import Image, ImageDraw
 import os
@@ -67,7 +70,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -140,6 +143,772 @@ def set_file_progress(filename, bytes_sent, total_bytes):
         app.after(0, lambda: app.show_file_progress(filename, bytes_sent, total_bytes))
 
 
+class SignalPulseLoader(ctk.CTkCanvas):
+    def __init__(self, master, width=280, height=280, max_radius=110, **kwargs):
+        # Resolve background color dynamically to blend in
+        bg_color = kwargs.pop("bg", None)
+        if bg_color is None:
+            bg_color = self._get_parent_bg(master)
+        
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=bg_color,
+            highlightthickness=0,
+            **kwargs
+        )
+        
+        self.width_val = width
+        self.height_val = height
+        self.max_radius = max_radius
+        self.pulse_duration = 3.0
+        self.ring_color = "#00E5FF"
+        
+        self.start_time = time.time()
+        self.pulse_offsets = [0, 1.0, 2.0]
+        self.running = False
+        self._after_id = None
+
+    def _get_parent_bg(self, master):
+        try:
+            color = master.cget("fg_color")
+            if isinstance(color, (list, tuple)):
+                mode = ctk.get_appearance_mode().lower()
+                color = color[1] if mode == "dark" else color[0]
+            if color == "transparent" or not color:
+                return self._get_parent_bg(master.master)
+            return color
+        except Exception:
+            return "#1E293B"
+
+    def is_foreground(self):
+        try:
+            toplevel = self.winfo_toplevel()
+            if hasattr(toplevel, "is_in_foreground"):
+                return toplevel.is_in_foreground()
+            return toplevel.winfo_viewable() and toplevel.state() == "normal"
+        except Exception:
+            return False
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.start_time = time.time()
+            self.animate()
+
+    def stop(self):
+        self.running = False
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def animate(self):
+        if not self.running:
+            return
+
+        if not self.is_foreground():
+            # Idle check when backgrounded/minimized
+            self._after_id = self.after(500, self.animate)
+            return
+
+        self.delete("all")
+
+        cx = self.width_val / 2
+        cy = self.height_val / 2
+
+        now = time.time()
+
+        # Draw pulse rings
+        for offset in self.pulse_offsets:
+            age = ((now - self.start_time) - offset) % self.pulse_duration
+            progress = age / self.pulse_duration
+            radius = progress * self.max_radius
+            opacity = max(0.0, 1.0 - progress)
+            color = self.fade_color(self.ring_color, opacity)
+
+            self.create_oval(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                outline=color,
+                width=3
+            )
+
+        # Outer glow
+        glow_radius = 18
+        self.create_oval(
+            cx - glow_radius,
+            cy - glow_radius,
+            cx + glow_radius,
+            cy + glow_radius,
+            fill="#0088AA",
+            outline=""
+        )
+
+        # Center node
+        self.create_oval(
+            cx - 8,
+            cy - 8,
+            cx + 8,
+            cy + 8,
+            fill=self.ring_color,
+            outline=""
+        )
+
+        self._after_id = self.after(16, self.animate)
+
+    def fade_color(self, hex_color, alpha):
+        hex_color = hex_color.lstrip("#")
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+
+        bg_color = self.cget("bg") or "#0f1117"
+        bg_color = bg_color.lstrip("#")
+        try:
+            bg_r = int(bg_color[0:2], 16)
+            bg_g = int(bg_color[2:4], 16)
+            bg_b = int(bg_color[4:6], 16)
+        except Exception:
+            bg_r, bg_g, bg_b = 15, 17, 23
+
+        r = int(bg_r + (r - bg_r) * alpha)
+        g = int(bg_g + (g - bg_g) * alpha)
+        b = int(bg_b + (b - bg_b) * alpha)
+
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+
+class ConnectedAnimation(ctk.CTkCanvas):
+    def __init__(self, master, width=280, height=280, **kwargs):
+        bg_color = kwargs.pop("bg", None)
+        if bg_color is None:
+            bg_color = self._get_parent_bg(master)
+
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=bg_color,
+            highlightthickness=0,
+            **kwargs
+        )
+
+        self.width_val = width
+        self.height_val = height
+        self.start_color = (0, 229, 255)   # cyan
+        self.end_color = (0, 255, 149)     # green
+        
+        self.start_time = time.time()
+        self.running = False
+        self._after_id = None
+
+    def _get_parent_bg(self, master):
+        try:
+            color = master.cget("fg_color")
+            if isinstance(color, (list, tuple)):
+                mode = ctk.get_appearance_mode().lower()
+                color = color[1] if mode == "dark" else color[0]
+            if color == "transparent" or not color:
+                return self._get_parent_bg(master.master)
+            return color
+        except Exception:
+            return "#1E293B"
+
+    def is_foreground(self):
+        try:
+            toplevel = self.winfo_toplevel()
+            if hasattr(toplevel, "is_in_foreground"):
+                return toplevel.is_in_foreground()
+            return toplevel.winfo_viewable() and toplevel.state() == "normal"
+        except Exception:
+            return False
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.start_time = time.time()
+            self.animate()
+
+    def stop(self):
+        self.running = False
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def interpolate_color(self, progress):
+        r = int(self.start_color[0] + (self.end_color[0] - self.start_color[0]) * progress)
+        g = int(self.start_color[1] + (self.end_color[1] - self.start_color[1]) * progress)
+        b = int(self.start_color[2] + (self.end_color[2] - self.start_color[2]) * progress)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def animate(self):
+        if not self.running:
+            return
+
+        if not self.is_foreground():
+            self.was_in_background = True
+            self._after_id = self.after(500, self.animate)
+            return
+
+        # If we just returned to foreground, restart animation timing
+        if getattr(self, "was_in_background", False):
+            self.start_time = time.time()
+            self.was_in_background = False
+
+        t = (time.time() - self.start_time) * 2.0
+        self.draw_frame(t)
+
+        if t > 3.0:
+            self.draw_frame(3.0)
+            self._after_id = None
+            return
+
+        self._after_id = self.after(16, self.animate)
+
+    def draw_frame(self, t):
+        self.delete("all")
+
+        cx = self.width_val / 2
+        cy = self.height_val / 2 - 20
+
+        # Stage 1: Collapse ring inward
+        if t < 1.4:
+            p = t / 1.4
+            radius = 70 * (1.0 - p)
+            color = "#00e5ff"
+            self.create_oval(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                outline=color,
+                width=5
+            )
+
+        # Stage 2: Orb changes color
+        if t >= 0.8:
+            p = min((t - 0.8) / 0.8, 1)
+            color = self.interpolate_color(p)
+            glow = 18
+            self.create_oval(
+                cx - glow,
+                cy - glow,
+                cx + glow,
+                cy + glow,
+                fill=color,
+                outline=""
+            )
+            self.create_oval(
+                cx - 8,
+                cy - 8,
+                cx + 8,
+                cy + 8,
+                fill="white",
+                outline=""
+            )
+
+        # Stage 3: Success pulse
+        if 1.4 <= t <= 2.4:
+            pulse_progress = (t - 1.4)
+            pulse_radius = 20 + pulse_progress * 80
+            opacity = max(0.0, 1.0 - pulse_progress)
+            intensity = int(255 * opacity)
+            pulse_color = f"#00{intensity:02x}95"
+            self.create_oval(
+                cx - pulse_radius,
+                cy - pulse_radius,
+                cx + pulse_radius,
+                cy + pulse_radius,
+                outline=pulse_color,
+                width=3
+            )
+
+        # Stage 4: Text fade in
+        if t > 1.8:
+            fade = min((t - 1.8) / 0.6, 1)
+            gray = int(120 + 135 * fade)
+            color = f"#{gray:02x}{gray:02x}{gray:02x}"
+            self.create_text(
+                cx,
+                cy + 80,
+                text="CONNECTED SUCCESSFULLY",
+                fill=color,
+                font=("Segoe UI", 12, "bold")
+            )
+
+
+class RelaySuccessAnimation(ctk.CTkCanvas):
+    def __init__(self, master, width=280, height=280, **kwargs):
+        bg_color = kwargs.pop("bg", None)
+        if bg_color is None:
+            bg_color = self._get_parent_bg(master)
+
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=bg_color,
+            highlightthickness=0,
+            **kwargs
+        )
+
+        self.width_val = width
+        self.height_val = height
+        
+        self.cyan_color = "#00e5ff"
+        self.green_color = "#00ff95"
+        self.white_color = "#ffffff"
+        
+        self.start_time = time.time()
+        self.running = False
+        self._after_id = None
+
+    def _get_parent_bg(self, master):
+        try:
+            color = master.cget("fg_color")
+            if isinstance(color, (list, tuple)):
+                mode = ctk.get_appearance_mode().lower()
+                color = color[1] if mode == "dark" else color[0]
+            if color == "transparent" or not color:
+                return self._get_parent_bg(master.master)
+            return color
+        except Exception:
+            return "#1E293B"
+
+    def is_foreground(self):
+        try:
+            toplevel = self.winfo_toplevel()
+            if hasattr(toplevel, "is_in_foreground"):
+                return toplevel.is_in_foreground()
+            return toplevel.winfo_viewable() and toplevel.state() == "normal"
+        except Exception:
+            return False
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.start_time = time.time()
+            self.animate()
+
+    def stop(self):
+        self.running = False
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def draw_glow_circle(self, x, y, r, color):
+        outer_color = self.fade_color(color, 0.25)
+        self.create_oval(
+            x - r * 1.8,
+            y - r * 1.8,
+            x + r * 1.8,
+            y + r * 1.8,
+            fill=outer_color,
+            outline=""
+        )
+
+        self.create_oval(
+            x - r,
+            y - r,
+            x + r,
+            y + r,
+            fill=color,
+            outline=""
+        )
+
+    def fade_color(self, hex_color, alpha):
+        hex_color = hex_color.lstrip("#")
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+
+        bg_color = self.cget("bg") or "#0f1117"
+        bg_color = bg_color.lstrip("#")
+        try:
+            bg_r = int(bg_color[0:2], 16)
+            bg_g = int(bg_color[2:4], 16)
+            bg_b = int(bg_color[4:6], 16)
+        except Exception:
+            bg_r, bg_g, bg_b = 15, 17, 23
+
+        r = int(bg_r + (r - bg_r) * alpha)
+        g = int(bg_g + (g - bg_g) * alpha)
+        b = int(bg_b + (b - bg_b) * alpha)
+
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def animate(self):
+        if not self.running:
+            return
+
+        if not self.is_foreground():
+            self.was_in_background = True
+            self._after_id = self.after(500, self.animate)
+            return
+
+        # If we just returned to foreground, restart animation timing
+        if getattr(self, "was_in_background", False):
+            self.start_time = time.time()
+            self.was_in_background = False
+
+        t = (time.time() - self.start_time) * 2.0
+        self.draw_frame(t)
+
+        # Stop rendering once static threshold (3.2s) is reached to save CPU
+        if t > 3.2:
+            self.draw_frame(3.2)
+            self._after_id = None
+            return
+
+        self._after_id = self.after(16, self.animate)
+
+    def draw_frame(self, t):
+        self.delete("all")
+
+        left_x = 40
+        relay_x = self.width_val / 2
+        right_x = self.width_val - 40
+        y = self.height_val / 2 - 20
+
+        # 1. Devices
+        self.draw_glow_circle(left_x, y, 10, self.cyan_color)
+        self.draw_glow_circle(right_x, y, 10, self.cyan_color)
+
+        # 2. Relay Node
+        relay_color = self.cyan_color
+        if t > 2:
+            relay_color = self.green_color
+
+        relay_radius = 14
+
+        if 1 <= t <= 1.8:
+            pulse = (t - 1) * 20
+            self.create_oval(
+                relay_x - pulse,
+                y - pulse,
+                relay_x + pulse,
+                y + pulse,
+                outline=self.cyan_color,
+                width=2
+            )
+
+        self.draw_glow_circle(relay_x, y, relay_radius, relay_color)
+
+        # 3. Packet 1 -> relay
+        if t <= 1:
+            progress = t / 1
+            x = left_x + (relay_x - left_x) * progress
+            self.create_oval(
+                x - 6,
+                y - 6,
+                x + 6,
+                y + 6,
+                fill=self.white_color,
+                outline=""
+            )
+
+        # 4. Packet relay -> device
+        if 1.2 <= t <= 2.2:
+            progress = (t - 1.2)
+            x = relay_x + (right_x - relay_x) * progress
+            self.create_oval(
+                x - 6,
+                y - 6,
+                x + 6,
+                y + 6,
+                fill=self.white_color,
+                outline=""
+            )
+
+        # 5. Route Activation
+        if t > 2:
+            self.create_line(
+                left_x,
+                y,
+                relay_x,
+                y,
+                fill=self.green_color,
+                width=4
+            )
+            self.create_line(
+                relay_x,
+                y,
+                right_x,
+                y,
+                fill=self.green_color,
+                width=4
+            )
+
+        # 6. Text
+        if t > 2.4:
+            fade = min((t - 2.4) / 0.8, 1)
+            gray = int(100 + 155 * fade)
+            color = f"#{gray:02x}{gray:02x}{gray:02x}"
+            self.create_text(
+                self.width_val / 2,
+                y + 80,
+                text="CONNECTED VIA SECURE RELAY",
+                fill=color,
+                font=("Segoe UI", 12, "bold")
+            )
+
+
+class AgentCanvas(ctk.CTkCanvas):
+    def __init__(self, master, **kwargs):
+        super().__init__(
+            master,
+            bg="#0b0f14",
+            highlightthickness=0,
+            **kwargs
+        )
+        self.agent_state = "idle"  # idle, thinking, transition, streaming
+        self.start_time = time.time()
+        self.target_x = 60
+        self.target_y = 60
+        self.core_x = 450
+        self.core_y = 200
+        self.bind("<Configure>", self.on_resize)
+        self.response_text = ""
+        self.stream_index = 0
+        self.response_box = None
+        self.is_error = False
+
+        # NeuralIdle wandering particles
+        self.particles = []
+        for _ in range(10):
+            angle = random.uniform(0, math.pi * 2)
+            distance = random.uniform(90, 200)
+            x = 450 + math.cos(angle) * distance
+            y = 200 + math.sin(angle) * distance
+            self.particles.append({
+                "x": x,
+                "y": y,
+                "vx": random.uniform(-0.25, 0.25),
+                "vy": random.uniform(-0.25, 0.25),
+                "size": random.uniform(1.5, 3)
+            })
+
+    def on_resize(self, event):
+        self.width_val = event.width
+        self.height_val = event.height
+        if self.agent_state in ("idle", "thinking"):
+            self.core_x = event.width / 2
+            self.core_y = event.height / 2 - 35
+
+    def set_state(self, state):
+        self.agent_state = state
+        self.start_time = time.time()
+
+    def start_thinking(self):
+        if self.response_box:
+            self.response_box.place_forget()
+        cx = getattr(self, "width_val", 900) / 2
+        cy = getattr(self, "height_val", 400) / 2 - 35
+        self.core_x = cx
+        self.core_y = cy
+        self.set_state("thinking")
+
+    def show_response(self, text, is_error=False):
+        self.response_text = text
+        self.is_error = is_error
+        self.set_state("transition")
+
+    def begin_streaming(self):
+        self.agent_state = "streaming"
+        self.stream_index = 0
+        if self.response_box:
+            self.response_box.configure(state="normal")
+            self.response_box.delete("1.0", "end")
+            if self.is_error:
+                self.response_box.configure(text_color="#ff5555")
+            else:
+                self.response_box.configure(text_color="#d7dde5")
+            self.response_box.configure(state="disabled")
+            self.response_box.place(relx=0.10, rely=0.22, relwidth=0.82, relheight=0.7)
+            self.response_box.lift()
+        self.stream_next()
+
+    def stream_next(self):
+        if self.agent_state != "streaming":
+            return
+        if self.stream_index >= len(self.response_text):
+            return
+        if self.response_box:
+            self.response_box.configure(state="normal")
+            self.response_box.insert("end", self.response_text[self.stream_index])
+            self.response_box.see("end")
+            self.response_box.configure(state="disabled")
+        self.stream_index += 1
+        self.after(12, self.stream_next)
+
+    def draw_glow_orb(self, x, y, r):
+        self.create_oval(
+            x - r * 3, y - r * 3,
+            x + r * 3, y + r * 3,
+            fill="#08313a",
+            outline=""
+        )
+        self.create_oval(
+            x - r * 1.8, y - r * 1.8,
+            x + r * 1.8, y + r * 1.8,
+            fill="#0c5260",
+            outline=""
+        )
+        self.create_oval(
+            x - r, y - r,
+            x + r, y + r,
+            fill="#00e5ff",
+            outline=""
+        )
+
+    def animate(self):
+        try:
+            self.delete("all")
+        except Exception:
+            return
+        t = time.time() - self.start_time
+
+        if self.agent_state == "idle":
+            cx = getattr(self, "width_val", 900) / 2
+            cy = getattr(self, "height_val", 400) / 2 - 35
+            
+            # Breathing core
+            breathing = 8 + 0.8 * math.sin(t * 0.45)
+            self.draw_glow_orb(cx, cy, breathing)
+            
+            # Drifting particles
+            for particle in self.particles:
+                dx = cx - particle["x"]
+                dy = cy - particle["y"]
+                distance = math.sqrt(dx * dx + dy * dy)
+                
+                if distance > 220:
+                    particle["vx"] += dx * 0.0007
+                    particle["vy"] += dy * 0.0007
+                    
+                particle["vx"] += random.uniform(-0.015, 0.015)
+                particle["vy"] += random.uniform(-0.015, 0.015)
+                particle["vx"] *= 0.995
+                particle["vy"] *= 0.995
+                particle["x"] += particle["vx"]
+                particle["y"] += particle["vy"]
+                
+                r = particle["size"]
+                # Soft glow
+                self.create_oval(
+                    particle["x"] - r * 2,
+                    particle["y"] - r * 2,
+                    particle["x"] + r * 2,
+                    particle["y"] + r * 2,
+                    fill="#103843",
+                    outline=""
+                )
+                # Particle
+                self.create_oval(
+                    particle["x"] - r,
+                    particle["y"] - r,
+                    particle["x"] + r,
+                    particle["y"] + r,
+                    fill="#00e5ff",
+                    outline=""
+                )
+                
+            dots = int((t * 1.2) % 4)
+
+            text = "Awaiting Input" + "." * dots
+
+            for dx, dy in [
+                (-1, -1), (-1, 0), (-1, 1),
+                (0, -1),           (0, 1),
+                (1, -1),  (1, 0),  (1, 1)
+            ]:
+                self.create_text(
+                    cx + dx,
+                    cy + 120 + dy,
+                    text=text,
+                    fill="#000000",
+                    font=("Segoe UI", 14, "bold")
+                )
+
+            # Main text
+            self.create_text(
+                cx,
+                cy + 120,
+                text=text,
+                fill="#aeb6c2",
+                font=("Segoe UI", 14, "bold")
+            )
+
+        elif self.agent_state == "thinking":
+            cx = getattr(self, "width_val", 900) / 2
+            cy = getattr(self, "height_val", 400) / 2 - 35
+            for radius, speed in [(70, 20), (110, -12), (150, 7)]:
+                self.create_arc(
+                    cx - radius, cy - radius,
+                    cx + radius, cy + radius,
+                    start=t * speed,
+                    extent=290,
+                    style="arc",
+                    outline="#16303a"
+                )
+            particles = [
+                (70, 0.9, "#00e5ff"),
+                (110, -0.55, "#00ff95"),
+                (150, 0.35, "#8a63ff")
+            ]
+            for radius, speed, color in particles:
+                angle = t * speed * 2
+                x = cx + radius * math.cos(angle)
+                y = cy + radius * math.sin(angle)
+                self.create_oval(
+                    x - 2, y - 2,
+                    x + 2, y + 2,
+                    fill=color,
+                    outline=""
+                )
+            breathing = 8 + 1.5 * math.sin(t * 0.9)
+            self.draw_glow_orb(cx, cy, breathing)
+            self.create_text(
+                cx, cy + 180,
+                text="Thinking...",
+                fill="#bfc6d0",
+                font=("Segoe UI", 16)
+            )
+
+        elif self.agent_state == "transition":
+            dx = self.target_x - self.core_x
+            dy = self.target_y - self.core_y
+            self.core_x += dx * 0.08
+            self.core_y += dy * 0.08
+            self.draw_glow_orb(self.core_x, self.core_y, 8)
+            if abs(dx) < 1 and abs(dy) < 1:
+                self.begin_streaming()
+
+        elif self.agent_state == "streaming":
+            self.draw_glow_orb(self.target_x, self.target_y, 8)
+            self.create_text(
+                100, 60,
+                anchor="w",
+                text="",
+                fill="white",
+                font=("Segoe UI", 16, "bold")
+            )
+
+        self.after(16, self.animate)
+
+
 class DeviceLinkApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -176,6 +945,8 @@ class DeviceLinkApp(ctk.CTk):
                 pass
 
         DeviceLinkApp._instance = self
+        from nexuslink.server.handlers import register_app_instance
+        register_app_instance(self)
         self.call_overlay_window = None
         self.last_status = None
         self.is_focused = True
@@ -184,9 +955,12 @@ class DeviceLinkApp(ctk.CTk):
         self.status_base_text = "Waiting for Android connection"
         self.bind("<FocusIn>", self.on_focus_in)
         self.bind("<FocusOut>", self.on_focus_out)
+        self.bind("<Unmap>", lambda e: self.update_telemetry_sync_state() if e.widget == self else None)
+        self.bind("<Map>", lambda e: self.update_telemetry_sync_state() if e.widget == self else None)
 
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.log_history = []
+        self.agent_chat_history = []
         self.logs_window = None
         self.log_textbox = None
         self.tabview = ctk.CTkTabview(self)
@@ -195,6 +969,7 @@ class DeviceLinkApp(ctk.CTk):
         self.tab_rules = self.tabview.add("Mobile Deck Shortcuts")
         self.tab_agent_test = self.tabview.add("AI Agent")
         self.tab_calls = self.tabview.add("Phone Calls")
+        self.tab_android = self.tabview.add("Android")
         self.settings_btn = ctk.CTkButton(
             self, 
             text="⚙ Settings", 
@@ -211,6 +986,14 @@ class DeviceLinkApp(ctk.CTk):
         self._build_rules_tab()
         self._build_agent_test_tab()
         self._build_calls_tab()
+        self.telemetry_sync_active = False
+        self.messages_win = None
+        self.desktop_deck_apps = []
+        self.deck_app_widgets = []
+        self.wallpaper_primary_color = ""
+        self.wallpaper_secondary_color = ""
+        self._build_android_tab()
+        self.tabview.configure(command=self.on_tab_changed)
         self.check_logs_loop()
         self.backend_thread = threading.Thread(target=self.start_backend, daemon=True)
         self.backend_thread.start()
@@ -220,7 +1003,7 @@ class DeviceLinkApp(ctk.CTk):
 
     def _build_status_tab(self):
         status_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
-        status_frame.pack(fill="x", padx=10, pady=(20, 10))
+        status_frame.pack(fill="x", padx=10, pady=(15, 5))
         
         self.status_title = ctk.CTkLabel(
             status_frame, 
@@ -235,32 +1018,45 @@ class DeviceLinkApp(ctk.CTk):
             text_color="gray",
             font=ctk.CTkFont(size=12)
         )
-        self.status_info.pack(anchor="w", pady=(2, 10))
+        self.status_info.pack(anchor="w", pady=(2, 5))
 
-        self.conn_status_frame = ctk.CTkFrame(status_frame, fg_color="#1E293B", height=32, corner_radius=6)
-        self.conn_status_frame.pack(anchor="w", pady=(0, 20))
+        # Center area for animation and status
+        self.center_status_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
+        self.center_status_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Pulse loader animation (starts stopped)
+        self.pulse_loader = SignalPulseLoader(self.center_status_frame, width=280, height=280, max_radius=110)
+        
+        # Connected animation (starts stopped)
+        self.connected_anim = ConnectedAnimation(self.center_status_frame, width=280, height=280)
+        
+        # Relay connected animation (starts stopped)
+        self.relay_anim = RelaySuccessAnimation(self.center_status_frame, width=280, height=280)
+        
+        # Connection status container inside center_status_frame
+        self.conn_status_frame = ctk.CTkFrame(self.center_status_frame, fg_color="#1E293B", height=36, corner_radius=8)
         
         self.status_dot = ctk.CTkLabel(
             self.conn_status_frame, 
             text="●", 
             text_color="#F59E0B", 
             font=ctk.CTkFont(size=14),
-            height=32,
+            height=36,
             width=24
         )
         self.status_dot.pack(side="left", padx=(12, 6))
         
         self.status_text = ctk.CTkLabel(
             self.conn_status_frame, 
-            text="Waiting for Android connection...", 
+            text="Waiting for Android connection", 
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#CBD5E1",
-            height=32
+            height=36
         )
         self.status_text.pack(side="left", padx=(0, 12))
 
         button_row = ctk.CTkFrame(self.tab_status, fg_color="transparent")
-        button_row.pack(fill="x", padx=10, pady=10)
+        button_row.pack(fill="x", side="bottom", padx=10, pady=(10, 20))
 
         self.show_qr_btn = ctk.CTkButton(
             button_row, 
@@ -536,6 +1332,20 @@ class DeviceLinkApp(ctk.CTk):
                 self.status_text.configure(text=self.status_base_text, text_color="#10B981")
                 self.set_phone_tab_state("normal")
                 self.send_file_btn.configure(state="normal")
+                
+                # Update status tab layout for connected state
+                self.pulse_loader.stop()
+                self.pulse_loader.pack_forget()
+                self.conn_status_frame.pack_forget()
+                
+                self.relay_anim.stop()
+                self.relay_anim.pack_forget()
+                
+                self.connected_anim.pack_forget()
+                self.connected_anim.pack(anchor="center", pady=(10, 10))
+                self.connected_anim.start()
+                self.status_info.configure(text=self.status_base_text, text_color="#10B981")
+                
                 if was_waiting:
                     self.run_checkmark_pulse(0)
             elif udp_peer:
@@ -544,6 +1354,20 @@ class DeviceLinkApp(ctk.CTk):
                 self.status_text.configure(text=self.status_base_text, text_color="#3B82F6")
                 self.set_phone_tab_state("normal")
                 self.send_file_btn.configure(state="normal")
+                
+                # Update status tab layout for connected state
+                self.pulse_loader.stop()
+                self.pulse_loader.pack_forget()
+                self.conn_status_frame.pack_forget()
+                
+                self.relay_anim.stop()
+                self.relay_anim.pack_forget()
+                
+                self.connected_anim.pack_forget()
+                self.connected_anim.pack(anchor="center", pady=(10, 10))
+                self.connected_anim.start()
+                self.status_info.configure(text=self.status_base_text, text_color="#3B82F6")
+                
                 if was_waiting:
                     self.run_checkmark_pulse(0)
             else:
@@ -553,6 +1377,20 @@ class DeviceLinkApp(ctk.CTk):
                     self.status_dot.configure(text="✔", text_color="#06B6D4") # Cyan
                     self.status_text.configure(text=self.status_base_text, text_color="#06B6D4")
                     self.set_phone_tab_state("disabled")
+                    
+                    # Update status tab layout for connected state
+                    self.pulse_loader.stop()
+                    self.pulse_loader.pack_forget()
+                    self.conn_status_frame.pack_forget()
+                    
+                    self.connected_anim.stop()
+                    self.connected_anim.pack_forget()
+                    
+                    self.relay_anim.pack_forget()
+                    self.relay_anim.pack(anchor="center", pady=(10, 10))
+                    self.relay_anim.start()
+                    self.status_info.configure(text=self.status_base_text, text_color="#06B6D4")
+                    
                     if was_waiting:
                         self.run_checkmark_pulse(0)
                 else:
@@ -560,6 +1398,22 @@ class DeviceLinkApp(ctk.CTk):
                     self.status_dot.configure(text="●", text_color="#D97706", font=ctk.CTkFont(size=14)) # Reset dot and font size
                     self.status_text.configure(text=self.status_base_text, text_color="#D97706")
                     self.set_phone_tab_state("disabled")
+                    
+                    # Pack pulse loader and then status text below it for waiting state
+                    self.connected_anim.stop()
+                    self.connected_anim.pack_forget()
+                    self.relay_anim.stop()
+                    self.relay_anim.pack_forget()
+                    
+                    self.pulse_loader.pack_forget()
+                    self.conn_status_frame.pack_forget()
+                    self.pulse_loader.pack(anchor="center", pady=(10, 10))
+                    self.pulse_loader.start()
+                    self.conn_status_frame.pack(anchor="center", pady=(5, 10))
+                    self.status_info.configure(text="Open the Android app to connect.", text_color="gray")
+            
+            # Keep telemetry sync state in sync with connection state
+            self.update_telemetry_sync_state()
         except Exception as e:
             print(f"[Console] Error updating connection status: {e}")
 
@@ -576,11 +1430,13 @@ class DeviceLinkApp(ctk.CTk):
     def set_phone_tab_state(self, state):
         try:
             if state == "disabled":
-                if self.tabview.get() == "Phone Calls":
+                if self.tabview.get() in ["Phone Calls", "Android"]:
                     self.tabview.set("Status")
                 self.tabview._segmented_button._buttons_dict["Phone Calls"].configure(state="disabled")
+                self.tabview._segmented_button._buttons_dict["Android"].configure(state="disabled")
             else:
                 self.tabview._segmented_button._buttons_dict["Phone Calls"].configure(state="normal")
+                self.tabview._segmented_button._buttons_dict["Android"].configure(state="normal")
         except Exception:
             pass
 
@@ -606,6 +1462,12 @@ class DeviceLinkApp(ctk.CTk):
         if event and event.widget != self:
             return
         self.is_focused = False
+
+    def is_in_foreground(self):
+        try:
+            return self.winfo_exists() and self.winfo_viewable() and self.state() == "normal" and getattr(self, "is_focused", True)
+        except Exception:
+            return False
 
     def trigger_status_animation(self):
         if self.status_animation_task:
@@ -638,14 +1500,11 @@ class DeviceLinkApp(ctk.CTk):
         base_text = getattr(self, "status_base_text", "Waiting for Android connection")
 
         if state_cat == "waiting":
-            # Cycle from 0 to 3 dots for waiting state
-            self.animation_frame = getattr(self, "animation_frame", 0) + 1
-            dots = "." * (self.animation_frame % 4)
             try:
-                self.status_text.configure(text=f"{base_text}{dots}")
+                self.status_text.configure(text=base_text)
             except Exception:
                 pass
-            self.status_animation_task = self.after(500, self.run_status_animation)
+            self.status_animation_task = self.after(1000, self.run_status_animation)
         else:
             # Static text for connected states (no trailing cycling dots)
             try:
@@ -1047,6 +1906,7 @@ class DeviceLinkApp(ctk.CTk):
 
     def hide_window(self):
         self.withdraw()
+        self.update_telemetry_sync_state()
 
     def show_window(self):
         self.after(0, self.deiconify)
@@ -1055,6 +1915,7 @@ class DeviceLinkApp(ctk.CTk):
         self.after(150, self.focus_force)
         self.after(200, lambda: self.refresh_connection_status(force=True))
         self.after(250, self.trigger_status_animation)
+        self.after(300, self.update_telemetry_sync_state)
 
     def quit_app(self):
         sys.stdout = original_stdout
@@ -1300,60 +2161,72 @@ class DeviceLinkApp(ctk.CTk):
         test_frame = ctk.CTkFrame(self.tab_agent_test, fg_color="transparent")
         test_frame.pack(fill="both", expand=True, padx=15, pady=15)
 
-        # Title
-        ctk.CTkLabel(
-            test_frame, 
-            text="Interactive AI Agent Sandbox", 
-            font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(anchor="w", pady=(0, 10))
-
-        # Instructions
-        ctk.CTkLabel(
-            test_frame, 
-            text="Type an NLP command below to test how the agent resolves, searches, or launches it on your PC.", 
-            text_color="gray",
-            font=ctk.CTkFont(size=12)
-        ).pack(anchor="w", pady=(0, 15))
-
-        # Input Row
-        input_row = ctk.CTkFrame(test_frame, fg_color="transparent")
-        input_row.pack(fill="x", pady=(0, 15))
+        # Center container for the input controls
+        input_container = ctk.CTkFrame(test_frame, fg_color="transparent")
+        input_container.pack(fill="x", pady=(10, 20), padx=50)
 
         self.prompt_entry = ctk.CTkEntry(
-            input_row, 
-            placeholder_text="e.g., launch steam, open youtube, close notepad...",
-            height=35
+            input_container, 
+            placeholder_text="Type an AI command (e.g., open youtube, sync clipboard...)",
+            height=40,
+            font=ctk.CTkFont(size=13)
         )
-        self.prompt_entry.pack(side="left", expand=True, fill="x", padx=(0, 10))
-        
-        # Bind enter key
+        self.prompt_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.prompt_entry.bind("<Return>", lambda event: self.send_test_prompt())
 
         self.send_prompt_btn = ctk.CTkButton(
-            input_row, 
+            input_container, 
             text="Run Command", 
             width=120, 
-            height=35,
+            height=40,
+            font=ctk.CTkFont(size=12, weight="bold"),
             command=self.send_test_prompt
         )
-        self.send_prompt_btn.pack(side="right")
+        self.send_prompt_btn.pack(side="left", padx=(0, 10))
 
-        # Terminal Log Container
-        ctk.CTkLabel(
-            test_frame, 
-            text="Execution Log & Response:", 
-            font=ctk.CTkFont(size=12, weight="bold")
-        ).pack(anchor="w", pady=(0, 5))
+        self.cancel_prompt_btn = ctk.CTkButton(
+            input_container,
+            text="Cancel",
+            width=80,
+            height=40,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#7f1d1d",
+            hover_color="#991b1b",
+            command=self.cancel_test_prompt
+        )
+        self.cancel_prompt_btn.pack(side="left", padx=(0, 10))
+        self.cancel_prompt_btn.configure(state="disabled")
 
-        self.test_console = ctk.CTkTextbox(
-            test_frame, 
-            font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color="#0A0915",
-            text_color="#A5F3FC",  # Nice cyan text for sandbox
+        self.chat_history_btn = ctk.CTkButton(
+            input_container,
+            text="Chat History",
+            width=110,
+            height=40,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#1e293b",
+            hover_color="#334155",
+            command=self.show_agent_chat_history
+        )
+        self.chat_history_btn.pack(side="left")
+
+        # Response text box (placed dynamically during streaming)
+        self.response_box = ctk.CTkTextbox(
+            test_frame,
+            fg_color="#0e131b",
+            border_width=1,
+            border_color="#1e293b",
+            font=ctk.CTkFont(size=13, family="Segoe UI"),
             wrap="word"
         )
-        self.test_console.pack(fill="both", expand=True)
-        self.test_console.configure(state="disabled")
+
+        # Agent Animation Canvas
+        self.agent_canvas = AgentCanvas(
+            test_frame
+        )
+        self.agent_canvas.response_box = self.response_box
+        self.agent_canvas.pack(fill="both", expand=True)
+        self.agent_canvas.set_state("idle")
+        self.agent_canvas.animate()
 
     def send_test_prompt(self):
         prompt = self.prompt_entry.get().strip()
@@ -1362,39 +2235,120 @@ class DeviceLinkApp(ctk.CTk):
 
         self.prompt_entry.delete(0, ctk.END)
         self.send_prompt_btn.configure(state="disabled")
+        self.cancel_prompt_btn.configure(state="normal")
         
-        # Enable console and insert prompt
-        self.test_console.configure(state="normal")
-        self.test_console.insert("end", f"\n>>> User: {prompt}\n")
-        self.test_console.insert("end", "[System] Agent is thinking...\n")
-        self.test_console.see("end")
-        self.test_console.configure(state="disabled")
+        # Add to history
+        self.agent_chat_history.append({
+            "prompt": prompt,
+            "result": "Thinking...",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+
+        # Start thinking animation
+        self.agent_canvas.start_thinking()
+        self.current_agent_future = None
 
         # Run in worker thread so the UI doesn't freeze during API request
         def worker():
             try:
                 # Import agent here to avoid circular imports or early setup issues
                 from nexuslink.server.agent_orchestrator import agent
+                import nexuslink.server.ws_server as ws_server
                 
-                # Execute NLP prompt
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(agent.execute_command(prompt))
-                loop.close()
+                # Check if the main backend event loop is running
+                loop = ws_server._loop
+                if loop and loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(agent.execute_command(prompt), loop)
+                    self.current_agent_future = future
+                    result = future.result()
+                else:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    task = loop.create_task(agent.execute_command(prompt))
+                    self.current_agent_future = task
+                    result = loop.run_until_complete(task)
+                    loop.close()
                 
                 # Update UI in main thread safely
-                self.after(0, lambda: self.append_test_result(f"[Agent Result]\n{result}\n"))
+                self.after(0, lambda: self.handle_agent_success(prompt, result))
             except Exception as e:
-                self.after(0, lambda: self.append_test_result(f"[Error] {e}\n"))
+                err_name = e.__class__.__name__
+                if "cancel" in err_name.lower() or "cancel" in str(e).lower():
+                    self.after(0, self.handle_agent_cancelled)
+                else:
+                    self.after(0, lambda: self.handle_agent_error(prompt, str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def append_test_result(self, text):
-        self.test_console.configure(state="normal")
-        self.test_console.insert("end", text)
-        self.test_console.see("end")
-        self.test_console.configure(state="disabled")
+    def cancel_test_prompt(self):
+        if hasattr(self, "current_agent_future") and self.current_agent_future:
+            try:
+                self.current_agent_future.cancel()
+            except Exception:
+                pass
+        self.handle_agent_cancelled()
+
+    def handle_agent_cancelled(self):
+        if self.agent_chat_history:
+            self.agent_chat_history[-1]["result"] = "[Cancelled by User]"
+        self.agent_canvas.show_response("Request cancelled by user.", is_error=True)
         self.send_prompt_btn.configure(state="normal")
+        self.cancel_prompt_btn.configure(state="disabled")
+
+    def handle_agent_success(self, prompt, result):
+        if self.agent_chat_history:
+            self.agent_chat_history[-1]["result"] = result
+        self.agent_canvas.show_response(result, is_error=False)
+        self.send_prompt_btn.configure(state="normal")
+        self.cancel_prompt_btn.configure(state="disabled")
+
+    def handle_agent_error(self, prompt, error_msg):
+        if self.agent_chat_history:
+            self.agent_chat_history[-1]["result"] = f"[Error] {error_msg}"
+        self.agent_canvas.show_response(f"An error occurred:\n\n{error_msg}", is_error=True)
+        self.send_prompt_btn.configure(state="normal")
+        self.cancel_prompt_btn.configure(state="disabled")
+
+    def show_agent_chat_history(self):
+        history_win = ctk.CTkToplevel(self)
+        history_win.title("AI Agent Command History")
+        history_win.geometry("600x500")
+        history_win.configure(fg_color="#0b0f14")
+        
+        # Keep on top of parent window on Windows
+        history_win.transient(self)
+        
+        # Lift and grab focus
+        history_win.lift()
+        history_win.focus_force()
+        
+        ctk.CTkLabel(
+            history_win,
+            text="Command History",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="white"
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+        
+        history_box = ctk.CTkTextbox(
+            history_win,
+            fg_color="#0e131b",
+            border_width=0,
+            font=ctk.CTkFont(size=12, family="Segoe UI"),
+            wrap="word"
+        )
+        history_box.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        if not self.agent_chat_history:
+            history_box.insert("end", "No commands executed in this session yet.\n")
+        else:
+            for entry in self.agent_chat_history:
+                history_box.insert("end", f"⏰ [{entry['timestamp']}] Command:\n")
+                history_box.insert("end", f"{entry['prompt']}\n\n")
+                history_box.insert("end", "🤖 Response:\n")
+                history_box.insert("end", f"{entry['result']}\n")
+                history_box.insert("end", "─" * 65 + "\n\n")
+                
+        history_box.configure(state="disabled")
 
     def _build_calls_tab(self):
         self.raw_contacts = [] # Store raw synced contacts
@@ -2230,6 +3184,875 @@ class DeviceLinkApp(ctk.CTk):
     def show_update_error(self, err_msg):
         from tkinter import messagebox
         messagebox.showerror("Update Failed", f"An error occurred during the update:\n\n{err_msg}")
+
+    def _build_android_tab(self):
+        # Container frame
+        container = ctk.CTkFrame(self.tab_android, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ── LEFT PANEL: WALLPAPER MOCKUP ──
+        wallpaper_panel = ctk.CTkFrame(
+            container,
+            fg_color="#0F172A",
+            width=340,
+            corner_radius=16,
+            border_width=1,
+            border_color="#1E293B"
+        )
+        wallpaper_panel.pack(side="left", fill="both", padx=(0, 10), pady=10)
+        wallpaper_panel.pack_propagate(False)
+
+        # Smartphone Mockup Frame
+        phone_frame = ctk.CTkFrame(
+            wallpaper_panel,
+            fg_color="#1E293B",
+            width=260,
+            height=440,
+            corner_radius=24
+        )
+        phone_frame.pack(anchor="center", pady=(40, 20))
+        phone_frame.pack_propagate(False)
+
+        # Screen inside the phone mockup — use gradient start color so no black shows
+        screen_frame = ctk.CTkFrame(
+            phone_frame,
+            fg_color="#0d1b2e",
+            width=244,
+            height=420,
+            corner_radius=18
+        )
+        screen_frame.place(relx=0.5, rely=0.5, anchor="center")
+        screen_frame.pack_propagate(False)
+        self._screen_frame = screen_frame  # store ref for color updates
+
+        # Wallpaper Image Label inside the Screen
+        self.wallpaper_label = ctk.CTkLabel(
+            screen_frame,
+            text="Waiting for wallpaper sync...",
+            font=ctk.CTkFont(size=12),
+            text_color="#64748B"
+        )
+        self.wallpaper_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        # Transparent overlay container for shortcut app cards
+        self.apps_grid_frame = ctk.CTkFrame(screen_frame, fg_color="transparent")
+        self.apps_grid_frame.place(x=0, y=0, relwidth=1, relheight=1)
+
+        # Load dynamic premium placeholder gradient as default wallpaper
+        try:
+            placeholder_img = self.generate_placeholder_wallpaper()
+            self.ctk_placeholder_img = ctk.CTkImage(
+                light_image=placeholder_img,
+                dark_image=placeholder_img,
+                size=(244, 420)
+            )
+            self.wallpaper_label.configure(image=self.ctk_placeholder_img, text="")
+        except Exception as e:
+            print(f"[GUI] Error generating placeholder wallpaper: {e}")
+
+        # ── RIGHT PANEL: SYSTEM STATUS & DETAILS ──
+        status_panel = ctk.CTkFrame(
+            container,
+            fg_color="#0F172A",
+            corner_radius=16,
+            border_width=1,
+            border_color="#1E293B"
+        )
+        status_panel.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+
+        # Battery Card (Top Right)
+        self.card_battery = ctk.CTkFrame(status_panel, fg_color="#1E293B", height=80)
+        self.card_battery.pack(fill="x", padx=20, pady=(15, 15))
+        self.card_battery.pack_propagate(False)
+
+        self.battery_icon_label = ctk.CTkLabel(
+            self.card_battery, text="🔋", font=ctk.CTkFont(size=24)
+        )
+        self.battery_icon_label.pack(side="left", padx=(15, 10))
+
+        self.battery_pct_label = ctk.CTkLabel(
+            self.card_battery, text="--%", font=ctk.CTkFont(size=18, weight="bold"), text_color="#F8FAFC"
+        )
+        self.battery_pct_label.pack(side="left", padx=5)
+
+        self.battery_state_label = ctk.CTkLabel(
+            self.card_battery, text="Discharging", font=ctk.CTkFont(size=12), text_color="#94A3B8"
+        )
+        self.battery_state_label.pack(side="left", padx=15)
+
+        self.battery_progress = ctk.CTkProgressBar(self.card_battery, height=8, width=150)
+        self.battery_progress.pack(side="right", padx=15)
+        self.battery_progress.set(0.0)
+
+        # 4x1 Grid Section for DND, Airplane, Ringer, Vibrate
+        self.grid_frame = ctk.CTkFrame(status_panel, fg_color="transparent")
+        self.grid_frame.pack(fill="x", padx=20, pady=(0, 15))
+        self.grid_frame.columnconfigure((0, 1, 2, 3), weight=1, uniform="grid")
+
+        # 1. Ringer Card — clickable to cycle Normal → Silent → Vibrate
+        self.card_ringer = ctk.CTkFrame(self.grid_frame, fg_color="#1E293B", height=85, cursor="hand2")
+        self.card_ringer.grid(row=0, column=0, padx=5, sticky="nsew")
+        self.card_ringer.pack_propagate(False)
+        self.card_ringer.bind("<Button-1>", lambda e: self.toggle_ringer())
+        self.lbl_ringer_icon = ctk.CTkLabel(self.card_ringer, text="🔊", font=ctk.CTkFont(size=22), cursor="hand2")
+        self.lbl_ringer_icon.pack(pady=(12, 2))
+        self.lbl_ringer_icon.bind("<Button-1>", lambda e: self.toggle_ringer())
+        self.lbl_ringer_text = ctk.CTkLabel(self.card_ringer, text="Ringer: Normal", font=ctk.CTkFont(size=11), text_color="#10B981", cursor="hand2")
+        self.lbl_ringer_text.pack()
+        self.lbl_ringer_text.bind("<Button-1>", lambda e: self.toggle_ringer())
+
+        # 2. Vibrate Card — clickable to toggle vibrate
+        self.card_vibrate = ctk.CTkFrame(self.grid_frame, fg_color="#1E293B", height=85, cursor="hand2")
+        self.card_vibrate.grid(row=0, column=1, padx=5, sticky="nsew")
+        self.card_vibrate.pack_propagate(False)
+        self.card_vibrate.bind("<Button-1>", lambda e: self.toggle_vibrate())
+        self.lbl_vibrate_icon = ctk.CTkLabel(self.card_vibrate, text="📳", font=ctk.CTkFont(size=22), cursor="hand2")
+        self.lbl_vibrate_icon.pack(pady=(12, 2))
+        self.lbl_vibrate_icon.bind("<Button-1>", lambda e: self.toggle_vibrate())
+        self.lbl_vibrate_text = ctk.CTkLabel(self.card_vibrate, text="Vibrate: Off", font=ctk.CTkFont(size=11), text_color="#94A3B8", cursor="hand2")
+        self.lbl_vibrate_text.pack()
+        self.lbl_vibrate_text.bind("<Button-1>", lambda e: self.toggle_vibrate())
+
+        # 3. DND Card — clickable to toggle DND
+        self.card_dnd = ctk.CTkFrame(self.grid_frame, fg_color="#1E293B", height=85, cursor="hand2")
+        self.card_dnd.grid(row=0, column=2, padx=5, sticky="nsew")
+        self.card_dnd.pack_propagate(False)
+        self.card_dnd.bind("<Button-1>", lambda e: self.toggle_dnd())
+        self.lbl_dnd_icon = ctk.CTkLabel(self.card_dnd, text="🌙", font=ctk.CTkFont(size=22), cursor="hand2")
+        self.lbl_dnd_icon.pack(pady=(12, 2))
+        self.lbl_dnd_icon.bind("<Button-1>", lambda e: self.toggle_dnd())
+        self.lbl_dnd_text = ctk.CTkLabel(self.card_dnd, text="DND: Off", font=ctk.CTkFont(size=11), text_color="#94A3B8", cursor="hand2")
+        self.lbl_dnd_text.pack()
+        self.lbl_dnd_text.bind("<Button-1>", lambda e: self.toggle_dnd())
+
+        # 4. Airplane Card — clickable to toggle airplane mode
+        self.card_airplane = ctk.CTkFrame(self.grid_frame, fg_color="#1E293B", height=85, cursor="hand2")
+        self.card_airplane.grid(row=0, column=3, padx=5, sticky="nsew")
+        self.card_airplane.pack_propagate(False)
+        self.card_airplane.bind("<Button-1>", lambda e: self.toggle_airplane())
+        self.lbl_airplane_icon = ctk.CTkLabel(self.card_airplane, text="✈️", font=ctk.CTkFont(size=22), cursor="hand2")
+        self.lbl_airplane_icon.pack(pady=(12, 2))
+        self.lbl_airplane_icon.bind("<Button-1>", lambda e: self.toggle_airplane())
+        self.lbl_airplane_text = ctk.CTkLabel(self.card_airplane, text="Airplane: Off", font=ctk.CTkFont(size=11), text_color="#94A3B8", cursor="hand2")
+        self.lbl_airplane_text.pack()
+        self.lbl_airplane_text.bind("<Button-1>", lambda e: self.toggle_airplane())
+
+        # Notifications list title
+        ctk.CTkLabel(
+            status_panel,
+            text="Notifications",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#F8FAFC"
+        ).pack(anchor="w", padx=20, pady=(5, 5))
+
+        # Scrollable Notifications list
+        self.notif_container = ctk.CTkScrollableFrame(status_panel, height=210)
+        self.notif_container.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        # Default text
+        self.notif_status_lbl = ctk.CTkLabel(
+            self.notif_container,
+            text="No active notifications",
+            text_color="gray"
+        )
+        self.notif_status_lbl.pack(pady=30)
+
+        # Bottom row for Messages button
+        self.bottom_row = ctk.CTkFrame(status_panel, fg_color="transparent")
+        self.bottom_row.pack(fill="x", padx=20, pady=(5, 15))
+
+        self.open_messages_btn = ctk.CTkButton(
+            self.bottom_row,
+            text="💬 Open Phone Messages (SMS)",
+            height=36,
+            command=self.open_messages_window
+        )
+        self.open_messages_btn.pack(fill="x")
+
+    def generate_placeholder_wallpaper(self):
+        img = Image.new("RGBA", (244, 420), "#0F172A")
+        # simple blue/purple dark gradient
+        for y in range(420):
+            r = int(15 + (45 - 15) * (y / 420))
+            g = int(23 + (15 - 23) * (y / 420))
+            b = int(42 + (70 - 42) * (y / 420))
+            for x in range(244):
+                img.putpixel((x, y), (r, g, b, 255))
+        return img
+
+    def resize_cover(self, pil_img, target_width, target_height):
+        orig_w, orig_h = pil_img.size
+        target_ratio = target_width / target_height
+        orig_ratio = orig_w / orig_h
+        
+        if orig_ratio > target_ratio:
+            new_h = target_height
+            new_w = int(orig_w * (target_height / orig_h))
+            resample_filter = getattr(Image, 'Resampling', None)
+            if resample_filter:
+                resample = resample_filter.LANCZOS
+            else:
+                resample = Image.ANTIALIAS
+            scaled = pil_img.resize((new_w, new_h), resample)
+            left = (new_w - target_width) // 2
+            return scaled.crop((left, 0, left + target_width, target_height))
+        else:
+            new_w = target_width
+            new_h = int(orig_h * (target_width / orig_w))
+            resample_filter = getattr(Image, 'Resampling', None)
+            if resample_filter:
+                resample = resample_filter.LANCZOS
+            else:
+                resample = Image.ANTIALIAS
+            scaled = pil_img.resize((new_w, new_h), resample)
+            top = (new_h - target_height) // 2
+            return scaled.crop((0, top, target_width, top + target_height))
+
+    def hex_to_rgb(self, hex_str):
+        hex_str = hex_str.lstrip('#')
+        return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
+
+    def generate_gradient_image(self, rgb1, rgb2, width, height):
+        # Create a 1x256 image with a vertical gradient, then scale it
+        gradient = Image.new("RGB", (1, 256))
+        for y in range(256):
+            factor = y / 255.0
+            r = int(rgb1[0] * (1 - factor) + rgb2[0] * factor)
+            g = int(rgb1[1] * (1 - factor) + rgb2[1] * factor)
+            b = int(rgb1[2] * (1 - factor) + rgb2[2] * factor)
+            gradient.putpixel((0, y), (r, g, b))
+        return gradient.resize((width, height), Image.Resampling.LANCZOS)
+
+    def on_tab_changed(self):
+        self.update_telemetry_sync_state()
+        if self.tabview.get() == "AI Agent":
+            if hasattr(self, "agent_canvas") and self.agent_canvas:
+                self.agent_canvas.set_state("idle")
+                if self.agent_canvas.response_box:
+                    self.agent_canvas.response_box.place_forget()
+
+    def update_telemetry_sync_state(self):
+        from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active
+        from nexuslink.server.udp_server import get_active_udp_peer
+        is_connected = bool(get_active_peers() or get_active_udp_peer() or get_cloud_relay_active())
+        
+        is_active = (
+            is_connected
+            and self.tabview.get() == "Android"
+            and self.winfo_viewable()
+            and self.state() != "iconic"
+        )
+        current_sync = getattr(self, "telemetry_sync_active", False)
+        if is_active != current_sync:
+            self.telemetry_sync_active = is_active
+            action = "start" if is_active else "stop"
+            try:
+                from nexuslink.server.ws_server import send_message_to_all_peers_sync
+                send_message_to_all_peers_sync("telemetry_control", {"action": action})
+                print(f"[GUI] Sent telemetry_control: {action}")
+            except Exception as e:
+                print(f"[GUI] Error sending telemetry_control: {e}")
+
+    def open_messages_window(self):
+        if hasattr(self, "messages_win") and self.messages_win and self.messages_win.winfo_exists():
+            self.messages_win.lift()
+            self.messages_win.focus()
+            return
+            
+        self.messages_win = ctk.CTkToplevel(self)
+        self.messages_win.title("Phone Messages (SMS)")
+        self.messages_win.geometry("600x480")
+        self.messages_win.resizable(False, False)
+        self.messages_win.attributes("-topmost", True)
+        self.messages_win.transient(self)
+        
+        # Header
+        ctk.CTkLabel(
+            self.messages_win,
+            text="Phone Messages",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(anchor="w", padx=20, pady=(20, 5))
+        
+        # Scrollable container for messages
+        self.sms_container = ctk.CTkScrollableFrame(self.messages_win)
+        self.sms_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        
+        # Label showing state
+        self.sms_status_lbl = ctk.CTkLabel(
+            self.sms_container,
+            text="Loading messages from Android...",
+            text_color="gray"
+        )
+        self.sms_status_lbl.pack(pady=40)
+        
+        # Bind window closing event
+        self.messages_win.protocol("WM_DELETE_WINDOW", self.close_messages_window)
+        
+        # Tell Android to start SMS sync
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("start_sms_sync", {})
+            print("[GUI] Sent start_sms_sync")
+        except Exception as e:
+            print(f"[GUI] Error starting SMS sync: {e}")
+
+    def close_messages_window(self):
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("stop_sms_sync", {})
+            print("[GUI] Sent stop_sms_sync")
+        except Exception as e:
+            print(f"[GUI] Error stopping SMS sync: {e}")
+            
+        if hasattr(self, "messages_win") and self.messages_win:
+            self.messages_win.destroy()
+            self.messages_win = None
+
+    def dismiss_notification(self, notif_id):
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("dismiss_notification", {"id": notif_id})
+            print(f"[GUI] Requested to dismiss notification: {notif_id}")
+        except Exception as e:
+            print(f"[GUI] Error dismissing notification: {e}")
+
+    def request_open_notification_settings(self):
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("android_action", {"action": "open_notification_settings"})
+            print("[GUI] Sent open_notification_settings action to Android")
+        except Exception as e:
+            print(f"[GUI] Error sending open_notification_settings: {e}")
+
+    def handle_sync_notifications(self, payload):
+        if not hasattr(self, "notif_container") or not self.notif_container or not self.notif_container.winfo_exists():
+            return
+
+        # Clear previous items
+        for child in self.notif_container.winfo_children():
+            child.destroy()
+
+        error = payload.get("error")
+        if error in ["permission_denied", "listener_not_bound"]:
+            frame = ctk.CTkFrame(self.notif_container, fg_color="transparent")
+            frame.pack(pady=30)
+            
+            if error == "permission_denied":
+                msg_text = "Notification Access Restricted.\nPlease enable Notification Access in Android settings.\n\n(If blocked, go to Phone Settings ➔ Apps ➔ DeviceLink ➔ tap ⋮ in top right ➔ 'Allow restricted settings')"
+            else:
+                msg_text = "Notification Listener Unbound.\nPlease toggle Notification Access OFF and ON again in Phone Settings to reactivate syncing."
+
+            ctk.CTkLabel(
+                frame,
+                text=msg_text,
+                text_color="#EF4444",
+                font=ctk.CTkFont(size=11, weight="normal"),
+                wraplength=320
+            ).pack(pady=(0, 10))
+            
+            ctk.CTkButton(
+                frame,
+                text="Open Phone Settings",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color="#EF4444",
+                hover_color="#DC2626",
+                height=28,
+                command=self.request_open_notification_settings
+            ).pack()
+            return
+
+        notifications = payload.get("notifications", [])
+        if not notifications:
+            ctk.CTkLabel(
+                self.notif_container,
+                text="No active notifications",
+                text_color="gray"
+            ).pack(pady=30)
+            return
+
+        # Render each notification
+        for notif in notifications:
+            notif_id = notif.get("id", "")
+            pkg = notif.get("package", "System")
+            title = notif.get("title", "")
+            text = notif.get("text", "")
+            is_clearable = notif.get("is_clearable", True)
+
+            app_name = pkg.split(".")[-1].capitalize()
+
+            card = ctk.CTkFrame(self.notif_container, fg_color="#1E293B", corner_radius=8)
+            card.pack(fill="x", pady=3, padx=5)
+
+            header = ctk.CTkFrame(card, fg_color="transparent")
+            header.pack(fill="x", padx=10, pady=(6, 2))
+
+            ctk.CTkLabel(
+                header,
+                text=app_name,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="#38BDF8"
+            ).pack(side="left")
+
+            if is_clearable:
+                btn_dismiss = ctk.CTkButton(
+                    header,
+                    text="✕",
+                    width=18,
+                    height=18,
+                    fg_color="transparent",
+                    hover_color="#334155",
+                    text_color="gray",
+                    font=ctk.CTkFont(size=10),
+                    command=lambda nid=notif_id: self.dismiss_notification(nid)
+                )
+                btn_dismiss.pack(side="right")
+
+            content_frame = ctk.CTkFrame(card, fg_color="transparent")
+            content_frame.pack(fill="x", padx=10, pady=(2, 6))
+
+            if title:
+                ctk.CTkLabel(
+                    content_frame,
+                    text=title,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#F8FAFC",
+                    anchor="w",
+                    justify="left",
+                    wraplength=350
+                ).pack(fill="x")
+
+            if text:
+                ctk.CTkLabel(
+                    content_frame,
+                    text=text,
+                    font=ctk.CTkFont(size=10),
+                    text_color="#94A3B8",
+                    anchor="w",
+                    justify="left",
+                    wraplength=350
+                ).pack(fill="x")
+
+    def handle_sync_sms(self, payload):
+        if not hasattr(self, "sms_container") or not self.sms_container or not self.sms_container.winfo_exists():
+            return
+            
+        for child in self.sms_container.winfo_children():
+            child.destroy()
+            
+        error = payload.get("error")
+        if error == "permission_denied":
+            ctk.CTkLabel(
+                self.sms_container,
+                text="Permission Restricted.\nPlease grant SMS permission on the Android app.",
+                text_color="#EF4444",
+                font=ctk.CTkFont(size=13, weight="bold")
+            ).pack(pady=40)
+            return
+            
+        messages = payload.get("messages", [])
+        if not messages:
+            ctk.CTkLabel(
+                self.sms_container,
+                text="No SMS messages found.",
+                text_color="gray"
+            ).pack(pady=40)
+            return
+            
+        import datetime
+        for msg in messages:
+            sender = msg.get("sender", "Unknown")
+            body = msg.get("body", "")
+            date_ms = msg.get("date", 0)
+            is_read = msg.get("read", True)
+            
+            time_str = ""
+            if date_ms > 0:
+                try:
+                    dt = datetime.datetime.fromtimestamp(date_ms / 1000.0)
+                    time_str = dt.strftime("%b %d, %H:%M")
+                except Exception:
+                    pass
+                    
+            card = ctk.CTkFrame(
+                self.sms_container,
+                fg_color="#1E293B" if is_read else "#0F172A",
+                border_width=0 if is_read else 1,
+                border_color="#3B82F6",
+                corner_radius=8
+            )
+            card.pack(fill="x", pady=4, padx=5)
+            
+            header = ctk.CTkFrame(card, fg_color="transparent")
+            header.pack(fill="x", padx=10, pady=(6, 2))
+            
+            ctk.CTkLabel(
+                header,
+                text=sender,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#38BDF8" if not is_read else "#F8FAFC"
+            ).pack(side="left")
+            
+            ctk.CTkLabel(
+                header,
+                text=time_str,
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
+            ).pack(side="right")
+            
+            body_lbl = ctk.CTkLabel(
+                card,
+                text=body,
+                font=ctk.CTkFont(size=11),
+                text_color="#CBD5E1",
+                justify="left",
+                wraplength=520,
+                anchor="w"
+            )
+            body_lbl.pack(fill="x", padx=10, pady=(2, 8))
+
+    def handle_sync_phone_status(self, payload):
+        wallpaper_b64 = payload.get("wallpaper", "")
+        primary_color = payload.get("primary_color", "")
+        secondary_color = payload.get("secondary_color", "")
+        
+        old_primary = getattr(self, "wallpaper_primary_color", "")
+        old_secondary = getattr(self, "wallpaper_secondary_color", "")
+        color_changed = (primary_color != old_primary or 
+                         secondary_color != old_secondary or 
+                         wallpaper_b64 != "")
+        
+        self.wallpaper_primary_color = primary_color
+        self.wallpaper_secondary_color = secondary_color
+        
+        if wallpaper_b64:
+            try:
+                import base64
+                from io import BytesIO
+                
+                img_data = base64.b64decode(wallpaper_b64)
+                pil_img = Image.open(BytesIO(img_data))
+                cropped_img = self.resize_cover(pil_img, 244, 420)
+                ctk_img = ctk.CTkImage(light_image=cropped_img, dark_image=cropped_img, size=(244, 420))
+                self.wallpaper_label.configure(image=ctk_img, text="")
+                self.wallpaper_label.image = ctk_img
+            except Exception as e:
+                print(f"[GUI] Error displaying wallpaper: {e}")
+        elif primary_color:
+            try:
+                p_rgb = self.hex_to_rgb(primary_color)
+                if secondary_color:
+                    s_rgb = self.hex_to_rgb(secondary_color)
+                else:
+                    s_rgb = tuple(max(0, int(c * 0.35)) for c in p_rgb)
+                
+                grad_img = self.generate_gradient_image(p_rgb, s_rgb, 244, 420)
+                ctk_img = ctk.CTkImage(light_image=grad_img, dark_image=grad_img, size=(244, 420))
+                self.wallpaper_label.configure(image=ctk_img, text="")
+                self.wallpaper_label.image = ctk_img
+            except Exception as e:
+                print(f"[GUI] Error displaying gradient: {e}")
+
+            # Dynamically match app's theme to dominant colors
+            try:
+                self.open_messages_btn.configure(fg_color=primary_color)
+                if secondary_color:
+                    self.open_messages_btn.configure(hover_color=secondary_color)
+                
+                if hasattr(self.tabview, "_segmented_button") and self.tabview._segmented_button:
+                    self.tabview._segmented_button.configure(
+                        selected_color=primary_color,
+                        selected_hover_color=secondary_color if secondary_color else primary_color
+                    )
+            except Exception as e:
+                print(f"[GUI] Error applying dynamic theme: {e}")
+        else:
+            self.wallpaper_primary_color = ""
+            self.wallpaper_secondary_color = ""
+            try:
+                self.wallpaper_label.configure(image=self.ctk_placeholder_img, text="Live status synced\n(Wallpaper access restricted)", text_color="#94A3B8")
+            except Exception:
+                pass
+
+            # Reset colors to default customtkinter colors on disconnection or if colors restricted
+            try:
+                self.open_messages_btn.configure(fg_color="#1f538d", hover_color="#14375e")
+                if hasattr(self.tabview, "_segmented_button") and self.tabview._segmented_button:
+                    self.tabview._segmented_button.configure(
+                        selected_color="#1f538d",
+                        selected_hover_color="#14375e"
+                    )
+            except Exception:
+                pass
+
+        if color_changed:
+            try:
+                self.update_deck_apps_display()
+            except Exception as e:
+                print(f"[GUI] Error updating deck apps display on phone status sync: {e}")
+
+        battery_level = payload.get("battery_level", 100)
+        is_charging = payload.get("is_charging", False)
+        self.battery_pct_label.configure(text=f"{battery_level}%")
+        self.battery_progress.set(battery_level / 100.0)
+        
+        if is_charging:
+            self.battery_state_label.configure(text="Charging", text_color="#06B6D4")
+            self.battery_progress.configure(progress_color="#06B6D4")
+            self.battery_icon_label.configure(text="🔌🔋")
+        else:
+            self.battery_state_label.configure(text="Discharging", text_color="#94A3B8")
+            self.battery_icon_label.configure(text="🔋")
+            if battery_level <= 20:
+                self.battery_progress.configure(progress_color="#EF4444")
+            else:
+                if primary_color:
+                    self.battery_progress.configure(progress_color=primary_color)
+                else:
+                    self.battery_progress.configure(progress_color="#10B981")
+
+        ringer_mode = payload.get("ringer_mode", "normal")
+        if ringer_mode == "normal":
+            self.lbl_ringer_icon.configure(text="🔊")
+            self.lbl_ringer_text.configure(text="Ringer: Normal", text_color="#10B981")
+            self.lbl_vibrate_icon.configure(text="📳", text_color="#F8FAFC")
+            self.lbl_vibrate_text.configure(text="Vibrate: Off", text_color="#94A3B8")
+            self.card_vibrate.configure(border_width=0)
+        elif ringer_mode == "vibrate":
+            self.lbl_ringer_icon.configure(text="🔇")
+            self.lbl_ringer_text.configure(text="Ringer: Silent", text_color="#EF4444")
+            self.lbl_vibrate_icon.configure(text="📳", text_color="#F59E0B")
+            self.lbl_vibrate_text.configure(text="Vibrate: On", text_color="#F59E0B")
+            self.card_vibrate.configure(border_color="#F59E0B", border_width=1)
+        elif ringer_mode == "silent":
+            self.lbl_ringer_icon.configure(text="🔇")
+            self.lbl_ringer_text.configure(text="Ringer: Silent", text_color="#EF4444")
+            self.lbl_vibrate_icon.configure(text="📳", text_color="#F8FAFC")
+            self.lbl_vibrate_text.configure(text="Vibrate: Off", text_color="#94A3B8")
+            self.card_vibrate.configure(border_width=0)
+
+        dnd_enabled = payload.get("dnd_enabled", False)
+        if dnd_enabled:
+            self.lbl_dnd_icon.configure(text="🌙", text_color="#A855F7")
+            self.lbl_dnd_text.configure(text="DND: On", text_color="#A855F7")
+            self.card_dnd.configure(border_color="#A855F7", border_width=1)
+        else:
+            self.lbl_dnd_icon.configure(text="🌙", text_color="#F8FAFC")
+            self.lbl_dnd_text.configure(text="DND: Off", text_color="#94A3B8")
+            self.card_dnd.configure(border_width=0)
+
+        airplane_mode = payload.get("airplane_mode", False)
+        if airplane_mode:
+            self.lbl_airplane_icon.configure(text="✈️", text_color="#3B82F6")
+            self.lbl_airplane_text.configure(text="Airplane: On", text_color="#3B82F6")
+            self.card_airplane.configure(border_color="#3B82F6", border_width=1)
+        else:
+            self.lbl_airplane_icon.configure(text="✈️", text_color="#F8FAFC")
+            self.lbl_airplane_text.configure(text="Airplane: Off", text_color="#94A3B8")
+            self.card_airplane.configure(border_width=0)
+
+    def handle_sync_desktop_deck(self, payload):
+        raw_apps = payload.get("apps", [])
+        # Normalize: ensure every item is a dict (guard against JSON arrays of non-dicts)
+        apps = [a for a in raw_apps if isinstance(a, dict)]
+        print(f"[GUI] handle_sync_desktop_deck: received {len(raw_apps)} apps, {len(apps)} valid dicts")
+        for i, a in enumerate(apps):
+            print(f"[GUI]   app[{i}]: label={a.get('label','?')!r}, pkg={a.get('package','?')!r}, icon_len={len(a.get('icon',''))}")
+        self.desktop_deck_apps = apps
+        self.update_deck_apps_display()
+
+    def update_deck_apps_display(self):
+        # 1. Clear existing tracked widgets
+        for widget in self.deck_app_widgets:
+            try:
+                widget.destroy()
+            except Exception:
+                pass
+        self.deck_app_widgets.clear()
+            
+        # 2. Reconfigure columns and rows on the transparent overlay frame
+        try:
+            parent_widget = self.apps_grid_frame
+            parent_widget.grid_columnconfigure(0, weight=1)
+            parent_widget.grid_columnconfigure(1, weight=1)
+            for i in range(5):
+                parent_widget.grid_rowconfigure(i, weight=1)
+        except Exception as e:
+            print(f"[GUI] update_deck_apps_display: error configuring parent_widget grid: {e}")
+            return
+            
+        def blend_colors(color_hex, target_hex, alpha):
+            if not color_hex or not color_hex.startswith("#"):
+                color_hex = "#1a2a4a"
+            if not target_hex or not target_hex.startswith("#"):
+                target_hex = "#000000"
+            try:
+                c1 = color_hex.strip().lstrip('#')
+                c2 = target_hex.strip().lstrip('#')
+                if len(c1) == 3:
+                    c1 = "".join(x*2 for x in c1)
+                if len(c2) == 3:
+                    c2 = "".join(x*2 for x in c2)
+                r1, g1, b1 = int(c1[0:2], 16), int(c1[2:4], 16), int(c1[4:6], 16)
+                r2, g2, b2 = int(c2[0:2], 16), int(c2[2:4], 16), int(c2[4:6], 16)
+                r = int(r1 * (1.0 - alpha) + r2 * alpha)
+                g = int(g1 * (1.0 - alpha) + g2 * alpha)
+                b = int(b1 * (1.0 - alpha) + b2 * alpha)
+                return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
+            except Exception:
+                return target_hex
+
+        # 3. Determine colors
+        bg_hex = self.wallpaper_primary_color if self.wallpaper_primary_color else "#1a2a4a"
+        card_fg = blend_colors(bg_hex, "#000000", 0.40)      # Translucent dark overlay
+        card_border = blend_colors(bg_hex, "#FFFFFF", 0.15)  # Glassmorphic border
+        hover_color = blend_colors(bg_hex, "#FFFFFF", 0.25)  # Lighter hover highlight
+        
+        def get_app_abbreviation(name: str) -> str:
+            if not name:
+                return "??"
+            parts = name.split()
+            if len(parts) >= 2:
+                return (parts[0][0] + parts[1][0]).upper()
+            return name[:2].upper()
+            
+        # 4. Display up to 10 apps
+        apps_to_show = self.desktop_deck_apps[:10]
+        for idx, app in enumerate(apps_to_show):
+            name = app.get("label") or app.get("name") or "Unknown"
+            pkg = app.get("package", "")
+            icon_b64 = app.get("icon", "")
+            
+            r = idx // 2
+            c = idx % 2
+            
+            # Create a rounded container card for the icon + text to make it unified and prevent ugly background box issues
+            card = ctk.CTkFrame(
+                parent_widget,
+                fg_color=card_fg,
+                border_color=card_border,
+                border_width=1,
+                corner_radius=12
+            )
+            card.grid(row=r, column=c, padx=8, pady=5, sticky="nsew")
+            self.deck_app_widgets.append(card)
+            
+            icon_image = None
+            if icon_b64:
+                try:
+                    import base64
+                    from io import BytesIO
+                    
+                    icon_data = base64.b64decode(icon_b64)
+                    pil_img = Image.open(BytesIO(icon_data))
+                    resample_filter = getattr(Image, 'Resampling', None)
+                    resample = resample_filter.LANCZOS if resample_filter else Image.ANTIALIAS
+                    resized_img = pil_img.resize((36, 36), resample)
+                    icon_image = ctk.CTkImage(light_image=resized_img, dark_image=resized_img, size=(36, 36))
+                except Exception as e:
+                    print(f"[GUI] Error decoding app icon: {e}")
+            
+            if icon_image:
+                btn = ctk.CTkButton(
+                    card,
+                    image=icon_image,
+                    text="",
+                    width=38,
+                    height=38,
+                    corner_radius=8,
+                    fg_color="transparent",
+                    hover_color=hover_color,
+                    command=lambda p=pkg: self.launch_deck_app(p)
+                )
+            else:
+                abbrev = get_app_abbreviation(name)
+                btn = ctk.CTkButton(
+                    card,
+                    text=abbrev,
+                    width=38,
+                    height=38,
+                    corner_radius=8,
+                    fg_color=bg_hex,
+                    hover_color=hover_color,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#FFFFFF",
+                    command=lambda p=pkg: self.launch_deck_app(p)
+                )
+            btn.pack(pady=(8, 2), anchor="center")
+            
+            display_name = name if len(name) <= 12 else name[:10] + ".."
+            lbl = ctk.CTkLabel(
+                card,
+                text=display_name,
+                font=ctk.CTkFont(size=10),
+                text_color="#CBD5E1",
+                fg_color="transparent"
+            )
+            lbl.pack(pady=(0, 8), anchor="center")
+
+    def launch_deck_app(self, package_name):
+        if package_name:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("android_action", {"action": "launch_app", "package": package_name})
+
+    def _send_android_action(self, action: str, **kwargs):
+        """Helper to send any android_action to the phone."""
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            payload = {"action": action, **kwargs}
+            send_message_to_all_peers_sync("android_action", payload)
+        except Exception as e:
+            print(f"[GUI] Error sending android_action '{action}': {e}")
+
+    def toggle_ringer(self):
+        current = self.lbl_ringer_text.cget("text")
+        if "Normal" in current:
+            next_mode = "silent"
+            label, icon, color = "Ringer: Silent", "🔇", "#EF4444"
+        else:
+            next_mode = "normal"
+            label, icon, color = "Ringer: Normal", "🔊", "#10B981"
+        self.lbl_ringer_text.configure(text=label, text_color=color)
+        self.lbl_ringer_icon.configure(text=icon)
+        self._send_android_action("set_ringer_mode", mode=next_mode)
+
+    # ── Vibrate toggle ──────────────────────────────────────────────────────
+    def toggle_vibrate(self):
+        current = self.lbl_vibrate_text.cget("text")
+        if "Off" in current:
+            self.lbl_vibrate_text.configure(text="Vibrate: On", text_color="#F59E0B")
+            self.lbl_vibrate_icon.configure(text="📳", text_color="#F59E0B")
+            self.card_vibrate.configure(border_color="#F59E0B", border_width=1)
+            self._send_android_action("set_vibrate", state=True)
+        else:
+            self.lbl_vibrate_text.configure(text="Vibrate: Off", text_color="#94A3B8")
+            self.lbl_vibrate_icon.configure(text="📳", text_color="#F8FAFC")
+            self.card_vibrate.configure(border_width=0)
+            self._send_android_action("set_vibrate", state=False)
+
+    # ── DND toggle ──────────────────────────────────────────────────────────
+    def toggle_dnd(self):
+        current = self.lbl_dnd_text.cget("text")
+        if "Off" in current:
+            self.lbl_dnd_text.configure(text="DND: On", text_color="#A855F7")
+            self.lbl_dnd_icon.configure(text="🌙")
+            self.card_dnd.configure(border_color="#A855F7", border_width=1)
+            self._send_android_action("set_dnd", state=True)
+        else:
+            self.lbl_dnd_text.configure(text="DND: Off", text_color="#94A3B8")
+            self.card_dnd.configure(border_width=0)
+            self._send_android_action("set_dnd", state=False)
+
+    # ── Airplane toggle ─────────────────────────────────────────────────────
+    def toggle_airplane(self):
+        current = self.lbl_airplane_text.cget("text")
+        if "Off" in current:
+            self.lbl_airplane_text.configure(text="Airplane: On", text_color="#38BDF8")
+            self.card_airplane.configure(border_color="#38BDF8", border_width=1)
+            self._send_android_action("set_airplane_mode", state=True)
+        else:
+            self.lbl_airplane_text.configure(text="Airplane: Off", text_color="#94A3B8")
+            self.card_airplane.configure(border_width=0)
+            self._send_android_action("set_airplane_mode", state=False)
 
 
 if __name__ == "__main__":

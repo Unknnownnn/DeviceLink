@@ -51,6 +51,7 @@ class ConnectionViewModel @Inject constructor(
     val nlpResponses = connectionManager.nlpResponses
     val deckShortcuts = connectionManager.deckShortcuts
     val bluetoothConnected = connectionManager.bluetoothConnected
+    val desktopDeck = connectionManager.desktopDeck
 
 
 
@@ -134,6 +135,10 @@ class ConnectionViewModel @Inject constructor(
 
     fun setLogsSubscription(enable: Boolean) {
         connectionManager.setLogsSubscription(enable)
+    }
+
+    fun saveDesktopDeckApps(apps: List<org.json.JSONObject>) {
+        connectionManager.saveDesktopDeckApps(apps)
     }
 
     override fun onCleared() {

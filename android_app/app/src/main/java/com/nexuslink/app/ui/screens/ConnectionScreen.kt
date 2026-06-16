@@ -25,7 +25,16 @@ import androidx.compose.animation.core.animateDp
 import androidx.compose.ui.composed
 import androidx.compose.ui.layout.approachLayout
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import kotlin.random.Random
+import kotlin.math.PI
+import kotlin.math.sin
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -45,6 +54,8 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -55,9 +66,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import android.content.Intent
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nexuslink.app.network.ConnectionState
 import com.nexuslink.app.ui.theme.*
@@ -71,6 +84,7 @@ import androidx.compose.animation.core.keyframes
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -85,6 +99,7 @@ fun ConnectionScreen(
     viewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val desktopDeck by viewModel.desktopDeck.collectAsState()
     val context = LocalContext.current
 
     var hasConnectedBefore by remember { mutableStateOf(false) }
@@ -101,6 +116,7 @@ fun ConnectionScreen(
     var nlpPrompt by remember { mutableStateOf("") }
     var nlpResponseDialogText by remember { mutableStateOf<String?>(null) }
     var showChatHistoryDialog by remember { mutableStateOf(false) }
+    var isAiThinking by remember { mutableStateOf(false) }
 
     // ── Runtime permissions for phone state, calls & contacts ──────────────────────
     val permissionsLauncher = rememberLauncherForActivityResult(
@@ -120,6 +136,10 @@ fun ConnectionScreen(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (ContextCompat.checkSelfPermission(context, "android.permission.ANSWER_PHONE_CALLS")
                     != PackageManager.PERMISSION_GRANTED) add("android.permission.ANSWER_PHONE_CALLS")
+            }
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) { // Android 12L (API 32) and lower
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT")
@@ -144,6 +164,7 @@ fun ConnectionScreen(
     LaunchedEffect(viewModel.nlpResponses) {
         viewModel.nlpResponses.collect { response ->
             nlpResponseDialogText = response
+            isAiThinking = false
         }
     }
 
@@ -323,18 +344,41 @@ fun ConnectionScreen(
                         }
                     }
                     is ConnectionState.Connected -> {
-                        val sections = remember { listOf("AI", "Apps", "Power", "Logs") }
+                        val sections = remember { listOf("AI", "Apps", "Power", "App Link") }
                         var activeSection by remember { mutableStateOf("AI") }
                         var expandedSection by remember { mutableStateOf("AI") }
 
+                        var isNotificationAccessGranted by remember { mutableStateOf(false) }
+                        var isOverlayPermissionGranted by remember { mutableStateOf(false) }
+                        val isMiuiDevice = remember { checkIsMiuiDevice(context) }
+                        var isMiuiPopupPermissionGranted by remember { mutableStateOf(true) }
+                        val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                        DisposableEffect(lifecycleOwner) {
+                            val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                                    val flat = android.provider.Settings.Secure.getString(
+                                        context.contentResolver,
+                                        "enabled_notification_listeners"
+                                    )
+                                    isNotificationAccessGranted = flat != null && flat.contains(context.packageName)
+                                    isOverlayPermissionGranted = android.provider.Settings.canDrawOverlays(context)
+                                    isMiuiPopupPermissionGranted = isMiuiBackgroundStartActivityAllowed(context)
+                                }
+                            }
+                            lifecycleOwner.lifecycle.addObserver(observer)
+                            onDispose {
+                                lifecycleOwner.lifecycle.removeObserver(observer)
+                            }
+                        }
+
                         DisposableEffect(activeSection) {
-                            if (activeSection == "Logs") {
+                            if (activeSection == "App Link") {
                                 viewModel.setLogsSubscription(true)
                             } else {
                                 viewModel.setLogsSubscription(false)
                             }
                             onDispose {
-                                if (activeSection == "Logs") {
+                                if (activeSection == "App Link") {
                                     viewModel.setLogsSubscription(false)
                                 }
                             }
@@ -353,6 +397,82 @@ fun ConnectionScreen(
                                 .fillMaxSize()
                                 .padding(vertical = 16.dp)
                         ) {
+                            if (!isNotificationAccessGranted) {
+                                var isExpandedWarning by remember { mutableStateOf(false) }
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .animateContentSize(),
+                                    colors = CardDefaults.cardColors(containerColor = Rose900.copy(alpha = 0.85f)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { isExpandedWarning = !isExpandedWarning }
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Error,
+                                                contentDescription = "Warning",
+                                                tint = Rose400,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Notification Access Required",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Icon(
+                                                imageVector = if (isExpandedWarning) androidx.compose.material.icons.Icons.Default.KeyboardArrowUp else androidx.compose.material.icons.Icons.Default.KeyboardArrowDown,
+                                                contentDescription = "Expand",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        if (isExpandedWarning) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 12.dp)
+                                                    .padding(bottom = 12.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text(
+                                                    text = "To sync notifications to your PC, this app needs notification listener access.\n\n" +
+                                                           "Note: If the settings toggle is disabled/greyed out, go to Phone Settings ➔ Apps ➔ DeviceLink ➔ tap ⋮ in top-right ➔ 'Allow restricted settings' and try again.",
+                                                    color = OnSurfaceDim,
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                                Button(
+                                                    onClick = {
+                                                        try {
+                                                            val intent = android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").apply {
+                                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                            }
+                                                            context.startActivity(intent)
+                                                        } catch (e: Exception) {
+                                                            android.widget.Toast.makeText(context, "Could not open settings: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Rose400),
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text("Grant Notification Access", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             val secColor: (String) -> Color = {
                                 when(it) {
                                     "AI" -> Rose400
@@ -380,43 +500,53 @@ fun ConnectionScreen(
                             ) {
                                 when (activeSection) {
                                     "AI" -> {
-                                        OutlinedTextField(
-                                            value = nlpPrompt,
-                                            onValueChange = { nlpPrompt = it },
-                                            label = { Text("Command") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            colors = OutlinedTextFieldDefaults.colors(
-                                                focusedBorderColor = Rose400,
-                                                unfocusedBorderColor = Surface600,
-                                                focusedTextColor = Color.White,
-                                                unfocusedTextColor = Color.White
+                                        if (isAiThinking) {
+                                            AIThinkingWave(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(280.dp)
+                                                    .clip(RoundedCornerShape(12.dp))
                                             )
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Button(
-                                                onClick = {
-                                                    if (nlpPrompt.isNotBlank()) {
-                                                        viewModel.sendNlpCommand(nlpPrompt)
-                                                        nlpPrompt = ""
-                                                    }
-                                                },
-                                                modifier = Modifier.weight(1f),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Rose500)
+                                        } else {
+                                            OutlinedTextField(
+                                                value = nlpPrompt,
+                                                onValueChange = { nlpPrompt = it },
+                                                label = { Text("Command") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = OutlinedTextFieldDefaults.colors(
+                                                    focusedBorderColor = Rose400,
+                                                    unfocusedBorderColor = Surface600,
+                                                    focusedTextColor = Color.White,
+                                                    unfocusedTextColor = Color.White
+                                                )
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
-                                                Text("Execute")
-                                            }
-                                            Button(
-                                                onClick = {
-                                                    showChatHistoryDialog = true
-                                                },
-                                                modifier = Modifier.weight(1f),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Surface600)
-                                            ) {
-                                                Text("Chat History")
+                                                Button(
+                                                    onClick = {
+                                                        if (nlpPrompt.isNotBlank()) {
+                                                            isAiThinking = true
+                                                            viewModel.sendNlpCommand(nlpPrompt)
+                                                            nlpPrompt = ""
+                                                        }
+                                                    },
+                                                    modifier = Modifier.weight(1f),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Rose500)
+                                                ) {
+                                                    Text("Execute")
+                                                }
+                                                Button(
+                                                    onClick = {
+                                                        showChatHistoryDialog = true
+                                                    },
+                                                    modifier = Modifier.weight(1f),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Surface600)
+                                                ) {
+                                                    Text("Chat History")
+                                                }
                                             }
                                         }
                                     }
@@ -475,54 +605,396 @@ fun ConnectionScreen(
                                             }
                                         }
                                     }
-                                    "Logs" -> {
-                                        Column(
-                                            horizontalAlignment = Alignment.Start,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text(
-                                                text = "System Logs (ChaCha20-Poly1305)",
-                                                color = Color(0xFFF59E0B),
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Spacer(modifier = Modifier.height(12.dp))
+                                    "App Link" -> {
+                                         Column(
+                                             horizontalAlignment = Alignment.Start,
+                                             modifier = Modifier.fillMaxWidth()
+                                         ) {
+                                             var showAppSelectionDialog by remember { mutableStateOf(false) }
+                                             var isLogsExpanded by remember { mutableStateOf(false) }
 
-                                            // Console-style Log Container
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(280.dp)
-                                                    .background(Surface900, RoundedCornerShape(8.dp))
-                                                    .border(1.dp, Surface600, RoundedCornerShape(8.dp))
-                                                    .padding(12.dp)
-                                            ) {
-                                                val scrollState = rememberScrollState()
-                                                LaunchedEffect(uiState.logs.size) {
-                                                    scrollState.animateScrollTo(scrollState.maxValue)
-                                                }
-                                                Column(modifier = Modifier.verticalScroll(scrollState)) {
-                                                    if (uiState.logs.isEmpty()) {
-                                                        Text(
-                                                            text = "No logs yet. Establish connection to begin.",
-                                                            color = OnSurfaceDim,
-                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                            style = MaterialTheme.typography.bodySmall
-                                                        )
-                                                    } else {
-                                                        uiState.logs.forEach { log ->
-                                                            Text(
-                                                                text = log,
-                                                                color = Color(0xFFF59E0B),
-                                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                                style = MaterialTheme.typography.bodySmall,
-                                                                modifier = Modifier.padding(bottom = 2.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                             if (!isOverlayPermissionGranted) {
+                                                 var isExpandedOverlayWarning by remember { mutableStateOf(false) }
+                                                 Card(
+                                                     modifier = Modifier
+                                                         .fillMaxWidth()
+                                                         .padding(bottom = 12.dp)
+                                                         .animateContentSize(),
+                                                     colors = CardDefaults.cardColors(containerColor = Rose900.copy(alpha = 0.85f)),
+                                                     shape = RoundedCornerShape(8.dp)
+                                                 ) {
+                                                     Column(modifier = Modifier.fillMaxWidth()) {
+                                                         Row(
+                                                             modifier = Modifier
+                                                                 .fillMaxWidth()
+                                                                 .clickable { isExpandedOverlayWarning = !isExpandedOverlayWarning }
+                                                                 .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                             verticalAlignment = Alignment.CenterVertically,
+                                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                         ) {
+                                                             Icon(
+                                                                 imageVector = Icons.Default.Error,
+                                                                 contentDescription = "Warning",
+                                                                 tint = Rose400,
+                                                                 modifier = Modifier.size(18.dp)
+                                                             )
+                                                             Text(
+                                                                 text = "Background Launch Required",
+                                                                 color = Color.White,
+                                                                 fontWeight = FontWeight.Bold,
+                                                                 style = MaterialTheme.typography.bodyMedium,
+                                                                 modifier = Modifier.weight(1f)
+                                                             )
+                                                             Icon(
+                                                                 imageVector = if (isExpandedOverlayWarning) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                                 contentDescription = "Expand",
+                                                                 tint = Color.White,
+                                                                 modifier = Modifier.size(20.dp)
+                                                             )
+                                                         }
+
+                                                         if (isExpandedOverlayWarning) {
+                                                             Column(
+                                                                 modifier = Modifier
+                                                                     .fillMaxWidth()
+                                                                     .padding(horizontal = 12.dp)
+                                                                     .padding(bottom = 12.dp),
+                                                                 verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                             ) {
+                                                                 Text(
+                                                                     text = "To allow launching apps from your PC while this app is in the background, please enable 'Display over other apps' permission.",
+                                                                     color = OnSurfaceDim,
+                                                                     style = MaterialTheme.typography.bodySmall
+                                                                 )
+                                                                 Button(
+                                                                     onClick = {
+                                                                         try {
+                                                                             val intent = Intent(
+                                                                                 android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                                                 android.net.Uri.parse("package:${context.packageName}")
+                                                                             ).apply {
+                                                                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                                             }
+                                                                             context.startActivity(intent)
+                                                                         } catch (e: Exception) {
+                                                                             try {
+                                                                                 val intent = Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                                                                                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                                                 }
+                                                                                 context.startActivity(intent)
+                                                                             } catch (ex: Exception) {
+                                                                                 android.widget.Toast.makeText(context, "Could not open settings: ${ex.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                                                             }
+                                                                         }
+                                                                     },
+                                                                     colors = ButtonDefaults.buttonColors(containerColor = Rose400),
+                                                                     modifier = Modifier.fillMaxWidth(),
+                                                                     shape = RoundedCornerShape(6.dp)
+                                                                 ) {
+                                                                     Text("Grant Permission", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                                                 }
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+
+                                             if (isOverlayPermissionGranted && isMiuiDevice && !isMiuiPopupPermissionGranted) {
+                                                 var isExpandedMiuiWarning by remember { mutableStateOf(false) }
+                                                 Card(
+                                                     modifier = Modifier
+                                                         .fillMaxWidth()
+                                                         .padding(bottom = 12.dp)
+                                                         .animateContentSize(),
+                                                     colors = CardDefaults.cardColors(containerColor = Rose900.copy(alpha = 0.85f)),
+                                                     shape = RoundedCornerShape(8.dp)
+                                                 ) {
+                                                     Column(modifier = Modifier.fillMaxWidth()) {
+                                                         Row(
+                                                             modifier = Modifier
+                                                                 .fillMaxWidth()
+                                                                 .clickable { isExpandedMiuiWarning = !isExpandedMiuiWarning }
+                                                                 .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                             verticalAlignment = Alignment.CenterVertically,
+                                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                         ) {
+                                                             Icon(
+                                                                 imageVector = Icons.Default.Error,
+                                                                 contentDescription = "Warning",
+                                                                 tint = Rose400,
+                                                                 modifier = Modifier.size(18.dp)
+                                                             )
+                                                             Text(
+                                                                 text = "MIUI Background Pop-up Required",
+                                                                 color = Color.White,
+                                                                 fontWeight = FontWeight.Bold,
+                                                                 style = MaterialTheme.typography.bodyMedium,
+                                                                 modifier = Modifier.weight(1f)
+                                                             )
+                                                             Icon(
+                                                                 imageVector = if (isExpandedMiuiWarning) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                                 contentDescription = "Expand",
+                                                                 tint = Color.White,
+                                                                 modifier = Modifier.size(20.dp)
+                                                             )
+                                                         }
+
+                                                         if (isExpandedMiuiWarning) {
+                                                             Column(
+                                                                 modifier = Modifier
+                                                                     .fillMaxWidth()
+                                                                     .padding(horizontal = 12.dp)
+                                                                     .padding(bottom = 12.dp),
+                                                                 verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                             ) {
+                                                                 Text(
+                                                                     text = "MIUI/HyperOS requires granting 'Display pop-up windows while running in background' under Other Permissions to launch apps from background.\n\n" +
+                                                                            "Go to Other Permissions -> Enable 'Display pop-up windows while running in the background'.",
+                                                                     color = OnSurfaceDim,
+                                                                     style = MaterialTheme.typography.bodySmall
+                                                                 )
+                                                                 Button(
+                                                                     onClick = {
+                                                                         openMiuiPermissionSettings(context)
+                                                                     },
+                                                                     colors = ButtonDefaults.buttonColors(containerColor = Rose400),
+                                                                     modifier = Modifier.fillMaxWidth(),
+                                                                     shape = RoundedCornerShape(6.dp)
+                                                                 ) {
+                                                                     Text("Grant Permission", color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                                                 }
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+
+                                             if (showAppSelectionDialog) {
+                                                 val pm = context.packageManager
+                                                 val installedApps = remember {
+                                                     val intent = android.content.Intent(android.content.Intent.ACTION_MAIN, null).apply {
+                                                         addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                                                     }
+                                                     pm.queryIntentActivities(intent, 0)
+                                                         .map {
+                                                             val label = it.loadLabel(pm).toString()
+                                                             val pkg = it.activityInfo.packageName
+                                                             Pair(label, pkg)
+                                                         }
+                                                         .sortedBy { it.first.lowercase() }
+                                                 }
+
+                                                 AlertDialog(
+                                                     onDismissRequest = { showAppSelectionDialog = false },
+                                                     title = { Text("Add App to Desktop Deck") },
+                                                     text = {
+                                                         LazyColumn(
+                                                             modifier = Modifier.heightIn(max = 280.dp).fillMaxWidth(),
+                                                             verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                         ) {
+                                                             items(installedApps) { app ->
+                                                                 val isAlreadyAdded = desktopDeck.any { it.optString("package") == app.second }
+                                                                 Row(
+                                                                     modifier = Modifier
+                                                                         .fillMaxWidth()
+                                                                         .clickable(enabled = !isAlreadyAdded) {
+                                                                             val newApp = org.json.JSONObject().apply {
+                                                                                 put("label", app.first)
+                                                                                 put("package", app.second)
+                                                                             }
+                                                                             viewModel.saveDesktopDeckApps(desktopDeck + newApp)
+                                                                             showAppSelectionDialog = false
+                                                                         }
+                                                                         .padding(vertical = 8.dp, horizontal = 12.dp),
+                                                                     verticalAlignment = Alignment.CenterVertically,
+                                                                     horizontalArrangement = Arrangement.SpaceBetween
+                                                                 ) {
+                                                                     Text(
+                                                                         text = app.first,
+                                                                         color = if (isAlreadyAdded) OnSurfaceDim else Color.White,
+                                                                         style = MaterialTheme.typography.bodyLarge
+                                                                     )
+                                                                     if (isAlreadyAdded) {
+                                                                         Text("Added", color = OnSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                                                                     }
+                                                                 }
+                                                             }
+                                                         }
+                                                     },
+                                                     confirmButton = {
+                                                         TextButton(onClick = { showAppSelectionDialog = false }) {
+                                                             Text("Close", color = Rose400)
+                                                         }
+                                                     },
+                                                     containerColor = Surface800,
+                                                     titleContentColor = Color.White,
+                                                     textContentColor = Color.White
+                                                 )
+                                             }
+
+                                             Text(
+                                                 text = "Desktop Deck Apps (${desktopDeck.size}/10)",
+                                                 color = Color.White,
+                                                 style = MaterialTheme.typography.titleMedium,
+                                                 fontWeight = FontWeight.Bold
+                                             )
+                                             Spacer(modifier = Modifier.height(8.dp))
+
+                                             if (desktopDeck.isEmpty()) {
+                                                 Text(
+                                                     text = "No apps in desktop deck yet.",
+                                                     color = OnSurfaceDim,
+                                                     style = MaterialTheme.typography.bodyMedium
+                                                 )
+                                             } else {
+                                                 // Render chips in rows
+                                                 Column(
+                                                     modifier = Modifier.fillMaxWidth(),
+                                                     verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                 ) {
+                                                     val rows = desktopDeck.chunked(2)
+                                                     for (rowApps in rows) {
+                                                         Row(
+                                                             modifier = Modifier.fillMaxWidth(),
+                                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                         ) {
+                                                             for (app in rowApps) {
+                                                                 val label = app.optString("label", "App")
+                                                                 val pkg = app.optString("package", "")
+                                                                 
+                                                                 Card(
+                                                                     colors = CardDefaults.cardColors(containerColor = Surface800),
+                                                                     modifier = Modifier
+                                                                         .weight(1f)
+                                                                         .clickable {
+                                                                             try {
+                                                                                 val launchIntent = context.packageManager.getLaunchIntentForPackage(pkg)
+                                                                                 if (launchIntent != null) {
+                                                                                     context.startActivity(launchIntent)
+                                                                                 } else {
+                                                                                     android.widget.Toast.makeText(context, "Cannot launch app", android.widget.Toast.LENGTH_SHORT).show()
+                                                                                 }
+                                                                             } catch (e: Exception) {
+                                                                                 android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                                                             }
+                                                                         },
+                                                                     shape = RoundedCornerShape(8.dp)
+                                                                 ) {
+                                                                     Row(
+                                                                         modifier = Modifier
+                                                                             .fillMaxWidth()
+                                                                             .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                                         verticalAlignment = Alignment.CenterVertically,
+                                                                         horizontalArrangement = Arrangement.SpaceBetween
+                                                                     ) {
+                                                                         Text(
+                                                                             text = if (label.length > 12) label.take(10) + ".." else label,
+                                                                             color = Color.White,
+                                                                             style = MaterialTheme.typography.bodyMedium,
+                                                                             modifier = Modifier.weight(1f)
+                                                                         )
+                                                                         IconButton(
+                                                                             onClick = {
+                                                                                 val updated = desktopDeck.filter { it.optString("package") != pkg }
+                                                                                 viewModel.saveDesktopDeckApps(updated)
+                                                                             },
+                                                                             modifier = Modifier.size(24.dp)
+                                                                         ) {
+                                                                             Icon(
+                                                                                 imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                                                                                 contentDescription = "Remove",
+                                                                                 tint = Rose400,
+                                                                                 modifier = Modifier.size(16.dp)
+                                                                             )
+                                                                         }
+                                                                     }
+                                                                 }
+                                                             }
+                                                             if (rowApps.size == 1) {
+                                                                 Spacer(modifier = Modifier.weight(1f))
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+
+                                             if (desktopDeck.size < 10) {
+                                                 Spacer(modifier = Modifier.height(8.dp))
+                                                 Button(
+                                                     onClick = { showAppSelectionDialog = true },
+                                                     colors = ButtonDefaults.buttonColors(containerColor = Blue400),
+                                                     modifier = Modifier.fillMaxWidth(),
+                                                     shape = RoundedCornerShape(8.dp)
+                                                 ) {
+                                                     Text("+ Add App to Desktop Deck", color = Color.White)
+                                                 }
+                                             }
+
+                                             Spacer(modifier = Modifier.height(16.dp))
+                                             HorizontalDivider(color = Surface600, thickness = 1.dp)
+                                             Spacer(modifier = Modifier.height(12.dp))
+
+                                             // Expandable Logs Header
+                                             Row(
+                                                 modifier = Modifier
+                                                     .fillMaxWidth()
+                                                     .clickable { isLogsExpanded = !isLogsExpanded }
+                                                     .padding(vertical = 4.dp),
+                                                 verticalAlignment = Alignment.CenterVertically,
+                                                 horizontalArrangement = Arrangement.SpaceBetween
+                                             ) {
+                                                 Text(
+                                                     text = "System Logs (ChaCha20-Poly1305)",
+                                                     color = Color(0xFFF59E0B),
+                                                     style = MaterialTheme.typography.bodyMedium,
+                                                     fontWeight = FontWeight.Bold
+                                                 )
+                                                 Icon(
+                                                     imageVector = if (isLogsExpanded) androidx.compose.material.icons.Icons.Default.KeyboardArrowUp else androidx.compose.material.icons.Icons.Default.KeyboardArrowDown,
+                                                     contentDescription = "Expand Logs",
+                                                     tint = Color(0xFFF59E0B),
+                                                     modifier = Modifier.size(20.dp)
+                                                 )
+                                             }
+                                             Spacer(modifier = Modifier.height(8.dp))
+
+                                             if (isLogsExpanded) {
+                                                 // Console-style Log Container
+                                                 Box(
+                                                     modifier = Modifier
+                                                         .fillMaxWidth()
+                                                         .height(160.dp)
+                                                         .background(Surface900, RoundedCornerShape(8.dp))
+                                                         .border(1.dp, Surface600, RoundedCornerShape(8.dp))
+                                                         .padding(12.dp)
+                                                 ) {
+                                                     val scrollState = rememberScrollState()
+                                                     LaunchedEffect(uiState.logs.size) {
+                                                         scrollState.animateScrollTo(scrollState.maxValue)
+                                                     }
+                                                     Column(modifier = Modifier.verticalScroll(scrollState)) {
+                                                         if (uiState.logs.isEmpty()) {
+                                                             Text(
+                                                                 text = "No logs yet. Establish connection to begin.",
+                                                                 color = OnSurfaceDim,
+                                                                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                                 style = MaterialTheme.typography.bodySmall
+                                                             )
+                                                         } else {
+                                                             uiState.logs.forEach { log ->
+                                                                 Text(
+                                                                     text = log,
+                                                                     color = Color(0xFFF59E0B),
+                                                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                                     style = MaterialTheme.typography.bodySmall,
+                                                                     modifier = Modifier.padding(bottom = 2.dp)
+                                                                 )
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+                                         }
                                     }
                                 }
                             }
@@ -591,6 +1063,7 @@ fun ConnectionScreen(
             dismissButton = if (hasError) {
                 {
                     TextButton(onClick = {
+                        isAiThinking = true
                         viewModel.retryLastNlpCommand()
                         nlpResponseDialogText = null
                     }) {
@@ -672,6 +1145,7 @@ fun ConnectionScreen(
                                         Spacer(modifier = Modifier.height(8.dp))
                                         TextButton(
                                             onClick = {
+                                                isAiThinking = true
                                                 viewModel.sendNlpCommand(chat.prompt)
                                                 showChatHistoryDialog = false
                                             },
@@ -1033,4 +1507,69 @@ private fun DrawScope.drawAnimatedRing(
         )
     )
 }
+
+@Composable
+fun AIThinkingWave(
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(
+        label = "wave"
+    )
+
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 3500,
+                easing = LinearEasing
+            )
+        ),
+        label = "phase"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .width(260.dp)
+                .height(140.dp)
+        ) {
+            val barCount = 15
+            val spacing = size.width / barCount
+            val minHeight = 14f
+            val maxHeight = 110f
+
+            repeat(barCount) { index ->
+                val x = index * spacing
+                val wave = ((sin(phase + index * 0.55f) + 1f) / 2f)
+                val height = minHeight + wave * (maxHeight - minHeight)
+                val width = 10f
+
+                drawRoundRect(
+                    color = Color(0xFF00E5FF),
+                    topLeft = Offset(x, (size.height - height) / 2f),
+                    size = Size(width, height),
+                    cornerRadius = CornerRadius(width, width)
+                )
+            }
+        }
+
+        Text(
+            text = "THINKING",
+            color = Color.White.copy(alpha = 0.6f),
+            letterSpacing = 4.sp,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 64.dp)
+        )
+    }
+}
+
 

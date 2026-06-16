@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.nexuslink.app.MainActivity
-import com.nexuslink.app.R
 import com.nexuslink.app.network.ConnectionManager
 import com.nexuslink.app.network.ConnectionState
 import dagger.hilt.android.AndroidEntryPoint

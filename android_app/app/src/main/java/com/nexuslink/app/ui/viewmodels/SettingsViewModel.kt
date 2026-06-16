@@ -18,12 +18,33 @@ class SettingsViewModel @Inject constructor(
     val autoConnectEnabled: StateFlow<Boolean> = preferencesManager.autoConnectEnabled
     val preferredAutoConnectFingerprint: StateFlow<String?> = preferencesManager.preferredAutoConnectFingerprint
 
+    val batterySaverEnabled: StateFlow<Boolean> = preferencesManager.batterySaverEnabled
+    val bgLaunchEnabled: StateFlow<Boolean> = preferencesManager.bgLaunchEnabled
+    val notifSyncEnabled: StateFlow<Boolean> = preferencesManager.notifSyncEnabled
+    val phoneSyncEnabled: StateFlow<Boolean> = preferencesManager.phoneSyncEnabled
+
     fun setAutoConnectEnabled(enabled: Boolean) {
         preferencesManager.setAutoConnectEnabled(enabled)
     }
 
     fun setPreferredAutoConnectFingerprint(fingerprint: String?) {
         preferencesManager.setPreferredAutoConnectFingerprint(fingerprint)
+    }
+
+    fun setBatterySaverEnabled(enabled: Boolean) {
+        preferencesManager.setBatterySaverEnabled(enabled)
+    }
+
+    fun setBgLaunchEnabled(enabled: Boolean) {
+        preferencesManager.setBgLaunchEnabled(enabled)
+    }
+
+    fun setNotifSyncEnabled(enabled: Boolean) {
+        preferencesManager.setNotifSyncEnabled(enabled)
+    }
+
+    fun setPhoneSyncEnabled(enabled: Boolean) {
+        preferencesManager.setPhoneSyncEnabled(enabled)
     }
 
     fun removeTrustedPeer(fingerprint: String) {
