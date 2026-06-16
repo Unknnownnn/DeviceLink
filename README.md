@@ -1,6 +1,6 @@
 # DeviceLink
 
-DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC and an Android device. It operates entirely on the local network with no cloud dependency. Communication is secured with a mutually authenticated handshake and per-session AEAD encryption. An AI agent on the Windows side can accept natural-language commands from the Android app to launch applications, perform searches, and interact with the PC.
+DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC and an Android device. It can operate entirely on the local network using mDNS, use WebRTC with UDP punching as a fallback when mDNS isnt available or via a secure cloud relay as a second fallback when UDP fails. Communication is secured with a mutually authenticated handshake and per-session encryption using ChaCha20-Poly1305 algorithm. You can configure an AI agent on the Windows side can accept natural-language commands from the Android app to launch applications, perform searches, and interact with the PC or vice versa on your phone. DeviceLink also includes custom desktop deck, notification mirroring, sms mirroring, and more on Windows to interact with your android device and a custom app deck, power options, AI agent on your phone to launch your PC apps instantly with your android device.
 
 ---
 
@@ -26,8 +26,13 @@ DeviceLink is a self-hosted, end-to-end encrypted bridge between a Windows PC an
 - **Direct file sharing** - Send files directly from the Windows dashboard or Android app. The transfer runs over direct, secure local channels (WebSocket or UDP) with real-time progress bars.
 - **Mobile deck shortcuts** - Define custom shortcut buttons on the Android app that trigger actions on the PC.
 - **AI agent** - Send natural-language commands from the phone. The agent can search for and launch applications, open URLs, and interact with the PC without requiring every action to be pre-approved.
+- **AI-Powered Mobile Control** - The AI agent is equipped with a remote device control tool to launch apps, toggle the basic settings, and adjust ring/media volume on the connected Android phone.
 - **System tray integration** - The Windows agent runs minimised to the tray with no persistent console window.
-- **No cloud, no accounts** - All traffic stays on the local network. Pairing is done once via QR code.
+- **Phone Status Synchronization** - Monitor phone status such as battery percentage, charging state, network connection type, Wi-Fi SSID, and Bluetooth connection status in real-time on the PC dashboard.
+- **Notification & SMS Mirroring** - Synchronize and view incoming Android app notifications and browse SMS threads directly on the Windows dashboard.
+- **Desktop Deck Integration** - Custom mobile deck widgets reside in a overlay grid frame, allowing the synced phone wallpaper to show through without visual blockiness.
+- **As secure as you want** - Features a collapsible permission manager allowing users to give it only the permissions they want to.
+- **No cloud, no accounts** - All traffic stays on the local network. Pairing is done once via QR code. Cloud relay fallback only uses encrypted messages to send commands and deletes them within 5 minutes. ANDROID MIRRORING , ANDROID CONTROLS & PHONE CONTACTS are NOT AVAIALABLE when connected via cloud relay.
 
 ---
 
@@ -85,6 +90,14 @@ Pairing binds an Android device's Ed25519 public key to the Windows agent's peer
 
 ## Setup
 
+### Download the latest windows binary and android apk via the releases tab from the offical github repo:
+- https://github.com/Unknnownnn/DeviceLink/releases   
+
+The apps include auto-updating features and automatically fetch the latest release when available.
+
+
+
+### Below are the instructions on how to build your own binaries via the source code
 ### Windows Agent
 
 1. Clone the repository.
@@ -107,17 +120,16 @@ Pairing binds an Android device's Ed25519 public key to the Windows agent's peer
    pip install -r requirements.txt
    ```
 
-4. (Optional) Create a `.env` file for AI agent configuration.
-
-   ```
-   OPENROUTER_API_KEY=your_key_here
-   OPENROUTER_MODEL=anthropic/claude-sonnet-4-5
-   ```
-
-5. Run the agent.
+4. Run the agent.
 
    ```
    python DeviceLink.pyw
+   ```
+
+5. Build the .exe file by running
+
+   ```
+   build.bat
    ```
 
 ### Android App
@@ -132,13 +144,13 @@ Open `android_app/` in Android Studio, build the project, and install the APK on
 2. Open the Android app and tap **Scan QR Code**.
 3. Point the camera at the QR code displayed on the PC.
 
-The Android device is now registered as a trusted peer. Future connections on the same local network are made automatically.
+The Android device is now registered as a trusted peer. Future connections on the same local network are made automatically. When local connection is not possible, the connection can be made via UDP Hole punching or cloud relay (limited functionality).
 
 ---
 
 ## AI Agent
 
-The agent is powered by a language model accessed via the [OpenRouter](https://openrouter.ai) API. It accepts natural-language commands from the Android app and executes them using a set of built-in tools.
+The agent is powered by a language model accessed via the [OpenRouter](https://openrouter.ai) API. It accepts natural-language commands and executes them using a set of built-in tools. You can add various whitelisted directories for it to use while executing tasks.
 
 ### Available Tools
 
@@ -149,6 +161,7 @@ The agent is powered by a language model accessed via the [OpenRouter](https://o
 | `open_url` | Opens a URL in the default browser |
 | `get_system_info` | Returns basic system information (OS, CPU, RAM) |
 | `list_running_processes` | Lists currently running processes |
+| `control_android_device` | Launches apps, toggles flashlight/torch, or controls media/ring volume on the connected Android device |
 
 ### Guardrails
 
@@ -157,6 +170,7 @@ The agent will not execute commands that:
 - Target protected system directories (`System32`, `Windows`, `Program Files`, etc.)
 - Delete or modify files outside explicitly permitted paths
 - Invoke blocked shell binaries (`cmd.exe`, `powershell.exe`, and equivalents)
+- Access or process sensitive user records like notifications, SMS messages, contacts, or call logs (strict privacy boundaries)
 
 If a command requires administrator privileges, the agent uses UAC elevation via `ShellExecuteW` with the `runas` verb.
 

@@ -19,13 +19,14 @@ windows_agent/.venv/
 windows_agent/venv/
 windows_agent/env/
 windows_agent/.env
-windows_agent/*.png
 windows_agent/*.key
 windows_agent/build/
 windows_agent/dist/
 windows_agent/*.log
 windows_agent/*.old
 windows_agent/devlinkupdate.exe
+windows_agent/server/test.py
+
 
 # General OS Files
 .DS_Store
