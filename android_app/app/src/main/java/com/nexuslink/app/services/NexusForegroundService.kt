@@ -129,9 +129,13 @@ class NexusForegroundService : Service() {
     }
 
     private fun buildNotification(state: ConnectionState): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            putExtra("route_to_connected", true)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val stopIntent = PendingIntent.getService(

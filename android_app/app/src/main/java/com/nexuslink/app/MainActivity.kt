@@ -1,19 +1,27 @@
 package com.nexuslink.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.nexuslink.app.network.ConnectionManager
 import com.nexuslink.app.ui.screens.ConnectionScreen
 import com.nexuslink.app.ui.screens.DeviceListScreen
 import com.nexuslink.app.ui.screens.QrScannerScreen
 import com.nexuslink.app.ui.theme.NexusLinkTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * Single-activity host for all NexusLink Compose screens.
@@ -26,8 +34,14 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @Inject
+    lateinit var connectionManager: ConnectionManager
+
+    private var shouldRouteToConnected by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         enableEdgeToEdge()
 
         // Request core permissions immediately on app launch
@@ -61,8 +75,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             NexusLinkTheme {
                 val navController = rememberNavController()
-                NexusLinkNavGraph(navController)
+                NexusLinkNavGraph(
+                    navController = navController,
+                    connectionManager = connectionManager,
+                    shouldRouteToConnected = shouldRouteToConnected,
+                    onRouteHandled = { shouldRouteToConnected = false }
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("route_to_connected", false) == true) {
+            shouldRouteToConnected = true
         }
     }
 }
@@ -83,7 +114,28 @@ object Routes {
 }
 
 @Composable
-fun NexusLinkNavGraph(navController: NavHostController) {
+fun NexusLinkNavGraph(
+    navController: NavHostController,
+    connectionManager: ConnectionManager,
+    shouldRouteToConnected: Boolean,
+    onRouteHandled: () -> Unit
+) {
+    val uiState by connectionManager.uiState.collectAsState()
+
+    LaunchedEffect(shouldRouteToConnected) {
+        if (shouldRouteToConnected) {
+            val host = uiState.host
+            val port = uiState.port
+            val fingerprint = uiState.peerFingerprint
+            if (host.isNotEmpty() && port != 0 && !fingerprint.isNullOrEmpty()) {
+                navController.navigate(Routes.connection(host, port, fingerprint)) {
+                    launchSingleTop = true
+                }
+            }
+            onRouteHandled()
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = Routes.DEVICE_LIST,
