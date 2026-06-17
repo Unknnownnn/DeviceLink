@@ -70,7 +70,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -907,6 +907,242 @@ class AgentCanvas(ctk.CTkCanvas):
             )
 
         self.after(16, self.animate)
+def get_installed_start_apps():
+    import subprocess
+    import json
+    try:
+        # Merged PowerShell query using both Get-StartApps and Shell COM object for virtual AppsFolder.
+        # This guarantees UWP Store apps like WhatsApp are found even if not indexed in the Start Menu.
+        cmd_str = (
+            "$apps = @(); "
+            "try { $apps += Get-StartApps | Select-Object Name, @{Name='AppID';Expression={$_.AppID}} } catch {}; "
+            "try { "
+            "  $shell = New-Object -ComObject Shell.Application; "
+            "  $folder = $shell.Namespace('shell:AppsFolder'); "
+            "  $apps += $folder.Items() | Select-Object @{Name='Name';Expression={$_.Name}}, @{Name='AppID';Expression={$_.Path}} "
+            "} catch {}; "
+            "$apps | Group-Object AppID | Foreach { $_.Group[0] } | ConvertTo-Json -Compress"
+        )
+        cmd = ["powershell", "-NoProfile", "-Command", cmd_str]
+        # 0x08000000 corresponds to CREATE_NO_WINDOW to prevent PowerShell console flashing
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=0x08000000)
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            if isinstance(data, dict):
+                return [data]
+            return data
+    except Exception as e:
+        import sys
+        print(f"Error retrieving installed apps: {e}", file=sys.__stderr__)
+    return []
+
+
+def get_shortcut_icon(label: str, item_type: str) -> str:
+    label_lower = label.lower()
+    if "spotify" in label_lower or "music" in label_lower or "song" in label_lower:
+        return "🎵"
+    elif "youtube" in label_lower or "netflix" in label_lower or "video" in label_lower or "tv" in label_lower:
+        return "📺"
+    elif "discord" in label_lower or "chat" in label_lower or "messenger" in label_lower or "whatsapp" in label_lower or "telegram" in label_lower:
+        return "💬"
+    elif "calculator" in label_lower or "calc" in label_lower:
+        return "🧮"
+    elif "firefox" in label_lower or "chrome" in label_lower or "safari" in label_lower or "edge" in label_lower or "browser" in label_lower or "internet" in label_lower:
+        return "🌐"
+    elif "notepad" in label_lower or "write" in label_lower or "text" in label_lower or "editor" in label_lower:
+        return "📝"
+    elif "explorer" in label_lower or "files" in label_lower or "folder" in label_lower or "directory" in label_lower:
+        return "📁"
+    elif "settings" in label_lower or "control panel" in label_lower or "config" in label_lower:
+        return "⚙"
+    elif item_type.lower() == "steam":
+        return "🎮"
+    elif item_type.lower() == "url":
+        return "🌐"
+    else:
+        return "💻"
+
+
+class ShortcutCard(ctk.CTkFrame):
+    def __init__(self, parent, icon, title, target, shortcut_type, on_edit, on_remove):
+        super().__init__(
+            parent,
+            fg_color="#252a33",
+            corner_radius=12,
+            width=160,
+            height=145
+        )
+        self.pack_propagate(False)
+        self.grid_propagate(False)
+        
+        self.title = title
+        self.target = target
+        self.shortcut_type = shortcut_type
+        self.default_icon = icon
+        self.on_edit = on_edit
+        self.on_remove = on_remove
+
+        # Badge on the top-left
+        self.badge = ctk.CTkLabel(
+            self,
+            text=shortcut_type.upper(),
+            fg_color="#205c9c" if shortcut_type.lower() == "app" else ("#e67e22" if shortcut_type.lower() == "steam" else "#2ecc71"),
+            corner_radius=6,
+            width=50,
+            height=18,
+            font=("Segoe UI", 10, "bold")
+        )
+        self.badge.place(x=8, y=8)
+
+        # Options Button (3 dots) on top-right
+        self.menu_btn = ctk.CTkButton(
+            self,
+            text="⋮",
+            fg_color="transparent",
+            hover_color="#303743",
+            width=24,
+            height=24,
+            font=("Segoe UI", 16, "bold"),
+            text_color="white",
+            corner_radius=12,
+            command=self.show_options_menu
+        )
+        self.menu_btn.place(x=128, y=8)
+
+        self.icon_label = ctk.CTkLabel(
+            self,
+            text=icon,
+            font=("Segoe UI Emoji", 34)
+        )
+        self.icon_label.pack(pady=(38, 5))
+
+        self.title_label = ctk.CTkLabel(
+            self,
+            text=self.truncate_text(title, 16),
+            font=("Segoe UI", 13, "bold")
+        )
+        self.title_label.pack(pady=(2, 2))
+
+        self.target_label = ctk.CTkLabel(
+            self,
+            text=self.truncate_text(target, 20),
+            font=("Segoe UI", 10),
+            text_color="#8a95a5"
+        )
+        self.target_label.pack(pady=(0, 5))
+
+        # Bind hover effects
+        for widget in [self, self.icon_label, self.title_label, self.target_label]:
+            widget.bind("<Enter>", self.hover_on)
+            widget.bind("<Leave>", self.hover_off)
+
+        # Check in memory cache first to prevent flickering when tab re-maps
+        app = self.winfo_toplevel()
+        if hasattr(app, "icon_cache") and target in app.icon_cache:
+            self.ctk_icon = app.icon_cache[target]
+            self.icon_label.configure(image=self.ctk_icon, text="")
+        else:
+            # Launch async task to extract high-res icon
+            threading.Thread(target=self._load_icon_async, daemon=True).start()
+
+    def show_options_menu(self):
+        import tkinter as tk
+        
+        # Create popup menu
+        menu = tk.Menu(self, tearoff=0, bg="#1e2127", fg="white", activebackground="#3498db", activeforeground="white")
+        menu.add_command(label="Edit", command=self.on_edit)
+        menu.add_command(label="Remove", command=self.on_remove)
+        
+        # Display menu at button location
+        try:
+            x = self.menu_btn.winfo_rootx()
+            y = self.menu_btn.winfo_rooty() + self.menu_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _load_icon_async(self):
+        try:
+            from nexuslink.server.ws_server import extract_shortcut_icon
+            b64_str = extract_shortcut_icon(self.target, self.shortcut_type, size=64)
+            if b64_str:
+                app = self.winfo_toplevel()
+                if hasattr(app, "ui_queue"):
+                    app.ui_queue.put(lambda: self._update_icon(b64_str))
+                else:
+                    self.after(0, lambda: self._update_icon(b64_str))
+        except Exception as e:
+            import sys, traceback
+            print(f"Error async loading icon for {self.title}: {e}", file=sys.__stderr__)
+            traceback.print_exc(file=sys.__stderr__)
+
+    def _update_icon(self, b64_str):
+        try:
+            import base64
+            from io import BytesIO
+            img_data = base64.b64decode(b64_str)
+            img = Image.open(BytesIO(img_data))
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            self.ctk_icon = ctk.CTkImage(light_image=img, dark_image=img, size=(48, 48))
+            self.icon_label.configure(image=self.ctk_icon, text="")
+            
+            # Cache it in the main window context
+            app = self.winfo_toplevel()
+            if hasattr(app, "icon_cache"):
+                app.icon_cache[self.target] = self.ctk_icon
+        except Exception as e:
+            import sys
+            print(f"Error setting icon for {self.title}: {e}", file=sys.__stderr__)
+
+    def hover_on(self, event):
+        self.configure(fg_color="#303743")
+
+    def hover_off(self, event):
+        self.configure(fg_color="#252a33")
+
+    def truncate_text(self, text, max_len=16):
+        if len(text) <= max_len:
+            return text
+        return text[:max_len-3] + "..."
+
+
+class AddCard(ctk.CTkFrame):
+    def __init__(self, parent, command):
+        super().__init__(
+            parent,
+            fg_color="transparent",
+            border_width=2,
+            border_color="#4d5563",
+            corner_radius=12,
+            width=160,
+            height=145
+        )
+        self.pack_propagate(False)
+        self.grid_propagate(False)
+        self.command = command
+
+        self.plus = ctk.CTkLabel(
+            self,
+            text="+",
+            font=("Segoe UI", 38)
+        )
+        self.plus.pack(expand=True)
+
+        for widget in [self, self.plus]:
+            widget.bind("<Enter>", self.hover_on)
+            widget.bind("<Leave>", self.hover_off)
+            widget.bind("<Button-1>", self.on_click)
+
+    def hover_on(self, event):
+        self.configure(border_color="#3498db")
+
+    def hover_off(self, event):
+        self.configure(border_color="#4d5563")
+
+    def on_click(self, event):
+        if self.command:
+            self.command()
 
 
 class DeviceLinkApp(ctk.CTk):
@@ -917,6 +1153,10 @@ class DeviceLinkApp(ctk.CTk):
         self.geometry("1050x650")
         self.resizable(False, False)
         self.settings = SettingsManager()
+        self.shortcut_cards = {}
+        self.add_card_widget = None
+        self.icon_cache = {}
+        self.ui_queue = queue.Queue()
         self.check_single_instance()
 
         if getattr(sys, 'frozen', False):
@@ -966,7 +1206,7 @@ class DeviceLinkApp(ctk.CTk):
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(padx=20, pady=20, fill="both", expand=True)
         self.tab_status = self.tabview.add("Status")
-        self.tab_rules = self.tabview.add("Mobile Deck Shortcuts")
+        self.tab_rules = self.tabview.add("Mobile Deck")
         self.tab_agent_test = self.tabview.add("AI Agent")
         self.tab_calls = self.tabview.add("Phone Calls")
         self.tab_android = self.tabview.add("Android")
@@ -995,6 +1235,7 @@ class DeviceLinkApp(ctk.CTk):
         self._build_android_tab()
         self.tabview.configure(command=self.on_tab_changed)
         self.check_logs_loop()
+        self.check_ui_queue()
         self.backend_thread = threading.Thread(target=self.start_backend, daemon=True)
         self.backend_thread.start()
         self.setup_tray()
@@ -1298,6 +1539,20 @@ class DeviceLinkApp(ctk.CTk):
         
         self.after(interval, self.check_logs_loop)
 
+    def check_ui_queue(self):
+        try:
+            while True:
+                callback = self.ui_queue.get_nowait()
+                if callback:
+                    try:
+                        callback()
+                    except Exception as e:
+                        import sys
+                        print(f"Error in UI queue callback: {e}", file=sys.__stderr__)
+        except queue.Empty:
+            pass
+        self.after(50, self.check_ui_queue)
+
     def refresh_connection_status(self, force=False):
         try:
             from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active
@@ -1584,85 +1839,438 @@ class DeviceLinkApp(ctk.CTk):
         self.shortcuts_col_frame = ctk.CTkFrame(self.rules_container)
         self.shortcuts_col_frame.grid(row=0, column=0, sticky="nsew")
 
+        # ── HEADER AND TOOLBAR (built once) ──────────────────────
+        self.rules_header = ctk.CTkFrame(self.shortcuts_col_frame, fg_color="transparent")
+        self.rules_header.pack(fill="x", padx=15, pady=(15, 10))
+
+        title = ctk.CTkLabel(
+            self.rules_header,
+            text="Mobile Deck",
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title.pack(side="left")
+
+        # Toolbar
+        self.rules_toolbar = ctk.CTkFrame(self.shortcuts_col_frame, fg_color="transparent")
+        self.rules_toolbar.pack(fill="x", padx=15, pady=(0, 15))
+
+        self.rules_search = ctk.CTkEntry(
+            self.rules_toolbar,
+            placeholder_text="Search shortcuts..."
+        )
+        self.rules_search.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 10)
+        )
+        self.rules_search.bind("<KeyRelease>", self.on_search_change)
+
+        self.rules_add_btn = ctk.CTkButton(
+            self.rules_toolbar,
+            text="Add Shortcut",
+            width=100,
+            command=self.show_add_shortcut_window
+        )
+        self.rules_add_btn.pack(
+            side="left"
+        )
+
+        self.rules_store_btn = ctk.CTkButton(
+            self.rules_toolbar,
+            text="Add Installed App",
+            width=120,
+            command=self.show_installed_apps_window
+        )
+        self.rules_store_btn.pack(
+            side="left",
+            padx=(10, 0)
+        )
+
+        # Scrollable grid frame for cards
+        self.rules_scroll = ctk.CTkScrollableFrame(self.shortcuts_col_frame, fg_color="transparent")
+        self.rules_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
         self.refresh_rules_ui()
 
-    def refresh_rules_ui(self):
-        # 1. Clear previous content
-        for widget in self.shortcuts_col_frame.winfo_children():
-            widget.destroy()
+    def on_search_change(self, event):
+        self.refresh_rules_ui()
 
-        # ── RIGHT COLUMN: Mobile Client Shortcuts ──────────────────────
-        ctk.CTkLabel(
-            self.shortcuts_col_frame, 
-            text="Mobile Deck Shortcuts", 
-            font=ctk.CTkFont(size=15, weight="bold")
-        ).pack(anchor="w", padx=15, pady=(15, 10))
+    def show_add_shortcut_window(self):
+        add_win = ctk.CTkToplevel(self)
+        add_win.title("Add Shortcut")
+        add_win.geometry("450x260")
+        add_win.resizable(False, False)
+        add_win.attributes("-topmost", True)
 
-        # Add Shortcut Form Container (pack bottom first!)
-        sc_add_frame = ctk.CTkFrame(self.shortcuts_col_frame, fg_color="transparent")
-        sc_add_frame.pack(fill="x", side="bottom", padx=15, pady=(5, 15))
+        ctk.CTkLabel(add_win, text="Add Mobile Deck Shortcut", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(15, 10))
 
-        self.sc_name_entry = ctk.CTkEntry(sc_add_frame, placeholder_text="Shortcut Label")
-        self.sc_name_entry.pack(fill="x", pady=2)
+        # Inputs container
+        form_frame = ctk.CTkFrame(add_win, fg_color="transparent")
+        form_frame.pack(fill="x", padx=20, pady=5)
 
-        sc_target_row = ctk.CTkFrame(sc_add_frame, fg_color="transparent")
-        sc_target_row.pack(fill="x", pady=2)
-        self.sc_target_entry = ctk.CTkEntry(sc_target_row, placeholder_text="Target Path/Steam ID/URL")
-        self.sc_target_entry.pack(side="left", expand=True, fill="x", padx=(0, 5))
-        self.sc_browse_btn = ctk.CTkButton(
-            sc_target_row, text="Browse", width=60, 
-            command=lambda: self.browse_exe(self.sc_target_entry)
-        )
-        self.sc_browse_btn.pack(side="left")
+        ctk.CTkLabel(form_frame, text="Label:").grid(row=0, column=0, sticky="w", pady=2)
+        label_entry = ctk.CTkEntry(form_frame, width=280, placeholder_text="e.g. Spotify")
+        label_entry.grid(row=0, column=1, padx=10, pady=2)
 
-        # Type Row with option menu
-        sc_type_row = ctk.CTkFrame(sc_add_frame, fg_color="transparent")
-        sc_type_row.pack(fill="x", pady=2)
-        ctk.CTkLabel(sc_type_row, text="Type:", font=ctk.CTkFont(size=12)).pack(side="left", padx=5)
-        self.sc_type_var = ctk.StringVar(value="app")
+        ctk.CTkLabel(form_frame, text="Target/Path:").grid(row=1, column=0, sticky="w", pady=2)
+        path_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        path_frame.grid(row=1, column=1, padx=10, pady=2)
+
+        target_entry = ctk.CTkEntry(path_frame, width=210, placeholder_text="Executable/Steam ID/URL")
+        target_entry.pack(side="left", padx=(0, 5))
         
-        def on_type_change(val):
+        browse_btn = ctk.CTkButton(path_frame, text="...", width=40, command=lambda: self.browse_exe(target_entry))
+        browse_btn.pack(side="left")
+
+        # Type row
+        ctk.CTkLabel(form_frame, text="Type:").grid(row=2, column=0, sticky="w", pady=2)
+        type_var = ctk.StringVar(value="app")
+        
+        def on_type_change_add(val):
             if val == "app":
-                self.sc_browse_btn.configure(state="normal")
+                browse_btn.configure(state="normal")
             else:
-                self.sc_browse_btn.configure(state="disabled")
+                browse_btn.configure(state="disabled")
 
-        self.sc_type_menu = ctk.CTkOptionMenu(
-            sc_type_row, values=["app", "steam", "url"], 
-            variable=self.sc_type_var, command=on_type_change, width=80
+        type_menu = ctk.CTkOptionMenu(
+            form_frame, values=["app", "steam", "url"], 
+            variable=type_var, command=on_type_change_add, width=80
         )
-        self.sc_type_menu.pack(side="left", padx=5)
+        type_menu.grid(row=2, column=1, padx=10, pady=2, sticky="w")
 
-        ctk.CTkButton(
-            sc_add_frame, text="Add Deck Shortcut", 
-            command=self.add_shortcut
-        ).pack(fill="x", pady=(5, 0))
+        def save_new_shortcut():
+            label = label_entry.get().strip()
+            target = target_entry.get().strip()
+            item_type = type_var.get()
+            if label and target:
+                shortcut_id = label.lower().replace(" ", "_")
+                self.settings.add_shortcut(shortcut_id, label, item_type, target)
+                self.refresh_rules_ui()
+                add_win.destroy()
+                from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
+                sync_shortcuts_to_active_peers()
 
-        # Scrollable list for shortcuts (pack to expand)
-        shortcuts_list_frame = ctk.CTkScrollableFrame(self.shortcuts_col_frame, fg_color="transparent")
-        shortcuts_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Save / Cancel row
+        btn_row = ctk.CTkFrame(add_win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=15)
+        ctk.CTkButton(btn_row, text="Cancel", width=80, fg_color="gray", hover_color="#555555", command=add_win.destroy).pack(side="right", padx=5)
+        ctk.CTkButton(btn_row, text="Add Shortcut", width=120, command=save_new_shortcut).pack(side="right", padx=5)
 
+    def show_installed_apps_window(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Add Installed App")
+        win.geometry("540x500")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        
+        # Sleek modern layout
+        ctk.CTkLabel(
+            win,
+            text="Add Installed or Windows Store App",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold")
+        ).pack(pady=(18, 5))
+        
+        # Search box container with a modern rounded layout
+        search_frame = ctk.CTkFrame(win, fg_color="transparent")
+        search_frame.pack(fill="x", padx=20, pady=10)
+        
+        search_entry = ctk.CTkEntry(
+            search_frame,
+            placeholder_text="Search installed apps (e.g. WhatsApp, Calculator)...",
+            height=36,
+            font=("Segoe UI", 12),
+            corner_radius=8
+        )
+        search_entry.pack(fill="x", expand=True)
+        search_entry.focus()
+        
+        # Loading/status container
+        status_frame = ctk.CTkFrame(win, fg_color="transparent")
+        status_frame.pack(pady=40)
+        
+        loading_lbl = ctk.CTkLabel(
+            status_frame,
+            text="Retrieving installed applications...",
+            font=ctk.CTkFont(family="Segoe UI", size=13, slant="italic"),
+            text_color="#94A3B8"
+        )
+        loading_lbl.pack()
+        
+        # Progress bar to make it look active and premium
+        progress_bar = ctk.CTkProgressBar(status_frame, width=200, mode="indefinite")
+        progress_bar.pack(pady=10)
+        progress_bar.start()
+        
+        # Scrollable container for list (hidden initially)
+        apps_scroll = ctk.CTkScrollableFrame(
+            win, 
+            fg_color="transparent",
+            scrollbar_button_color="#334155",
+            scrollbar_button_hover_color="#475569"
+        )
+        
+        all_apps = []
+        active_widgets = []
+        
+        def update_list(query=""):
+            # Clear previous widgets safely
+            for w in active_widgets:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+            active_widgets.clear()
+            
+            # Filter matches safely (avoid None lower attributes)
+            query_clean = query.strip().lower()
+            filtered = []
+            for app in all_apps:
+                name = (app.get("Name") or "")
+                appid = (app.get("AppID") or "")
+                if not query_clean or query_clean in name.lower() or query_clean in appid.lower():
+                    filtered.append(app)
+            
+            # Slice to top 50 matches to keep UI blisteringly fast and prevent stuttering
+            display_slice = filtered[:50]
+            
+            if not display_slice:
+                no_match_frame = ctk.CTkFrame(apps_scroll, fg_color="transparent")
+                no_match_frame.pack(pady=40)
+                active_widgets.append(no_match_frame)
+                
+                ctk.CTkLabel(
+                    no_match_frame, 
+                    text="No matching applications found", 
+                    font=("Segoe UI", 13, "bold"), 
+                    text_color="#64748B"
+                ).pack()
+                ctk.CTkLabel(
+                    no_match_frame, 
+                    text="Try searching for a different keyword", 
+                    font=("Segoe UI", 11), 
+                    text_color="#475569"
+                ).pack(pady=2)
+                return
+                
+            for app in display_slice:
+                name = app.get("Name", "Unknown App")
+                appid = app.get("AppID", "")
+                
+                # Card row frame
+                row = ctk.CTkFrame(
+                    apps_scroll, 
+                    fg_color="#1E293B", 
+                    corner_radius=8, 
+                    border_color="#334155", 
+                    border_width=1
+                )
+                row.pack(fill="x", pady=4, ipady=4, padx=5)
+                active_widgets.append(row)
+                
+                info_frame = ctk.CTkFrame(row, fg_color="transparent")
+                info_frame.pack(side="left", fill="both", expand=True, padx=12, pady=2)
+                
+                display_name = name if len(name) <= 30 else name[:27] + "..."
+                ctk.CTkLabel(
+                    info_frame,
+                    text=display_name,
+                    font=("Segoe UI", 12, "bold"),
+                    text_color="#F8FAFC",
+                    anchor="w"
+                ).pack(fill="x", anchor="w")
+                
+                display_id = appid if len(appid) <= 46 else appid[:43] + "..."
+                ctk.CTkLabel(
+                    info_frame,
+                    text=display_id,
+                    font=("Segoe UI", 9),
+                    text_color="#64748B",
+                    anchor="w"
+                ).pack(fill="x", anchor="w")
+                
+                def make_add_cmd(app_name=name, app_id=appid):
+                    def add_cmd():
+                        if app_id.startswith("shell:") or app_id.lower().startswith("http://") or app_id.lower().startswith("https://") or app_id.startswith("steam:"):
+                            target_val = app_id
+                        elif ":" in app_id and (app_id.endswith(".exe") or app_id.endswith(".lnk") or os.path.exists(app_id)):
+                            target_val = app_id
+                        else:
+                            target_val = f"shell:AppsFolder\\{app_id}"
+                            
+                        shortcut_id = app_name.lower().replace(" ", "_")
+                        shortcut_id = "".join(c for c in shortcut_id if c.isalnum() or c == "_")
+                        
+                        existing = self.settings.get_deck_shortcuts()
+                        if any(s['id'] == shortcut_id for s in existing):
+                            shortcut_id += f"_{len(existing)}"
+                            
+                        self.settings.add_shortcut(shortcut_id, app_name, "app", target_val)
+                        self.refresh_rules_ui()
+                        win.destroy()
+                        
+                        from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
+                        sync_shortcuts_to_active_peers()
+                    return add_cmd
+                    
+                add_btn = ctk.CTkButton(
+                    row,
+                    text="Add to Deck",
+                    width=85,
+                    height=26,
+                    corner_radius=6,
+                    fg_color="#2563EB",
+                    hover_color="#1D4ED8",
+                    font=("Segoe UI", 11, "bold"),
+                    command=make_add_cmd(name, appid)
+                )
+                add_btn.pack(side="right", padx=10, pady=4)
+
+        # Bind modern search change
+        def on_search_change(event=None):
+            update_list(search_entry.get())
+            
+        search_entry.bind("<KeyRelease>", on_search_change)
+        
+        def load_apps_thread():
+            apps = get_installed_start_apps()
+            self.ui_queue.put(lambda: display_apps(apps))
+            
+        def display_apps(apps):
+            try:
+                progress_bar.stop()
+                status_frame.destroy()
+            except Exception:
+                pass
+                
+            apps_scroll.pack(fill="both", expand=True, padx=20, pady=(5, 20))
+            
+            if not apps:
+                ctk.CTkLabel(
+                    apps_scroll, 
+                    text="No installed apps found.", 
+                    font=("Segoe UI", 13), 
+                    text_color="#94A3B8"
+                ).pack(pady=40)
+                return
+                
+            # Sort apps alphabetically, filtering out empty items safely
+            sorted_apps = sorted(
+                [a for a in apps if a.get("Name")],
+                key=lambda x: (x.get("Name") or "").lower()
+            )
+            all_apps.extend(sorted_apps)
+            
+            # Initial list display (first 50 items)
+            update_list()
+            
+        import threading
+        threading.Thread(target=load_apps_thread, daemon=True).start()
+
+    def refresh_rules_ui(self):
+        if not hasattr(self, "shortcut_cards"):
+            self.shortcut_cards = {}
+        if not hasattr(self, "add_card_widget"):
+            self.add_card_widget = None
+
+        search_query = self.rules_search.get().strip().lower() if hasattr(self, "rules_search") else ""
+
+        # Fetch shortcuts from settings
         shortcuts = self.settings.get_deck_shortcuts()
-        for s in shortcuts:
-            row = ctk.CTkFrame(shortcuts_list_frame, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            
-            # Pack buttons FIRST on the right to keep them fixed in place
-            # Remove button
-            ctk.CTkButton(
-                row, text="Remove", width=55, height=22, fg_color="#E74C3C", hover_color="#C0392B", 
-                command=lambda sid=s['id']: self.remove_shortcut(sid)
-            ).pack(side="right", padx=2)
-            
-            # Edit button
-            ctk.CTkButton(
-                row, text="Edit", width=45, height=22, fg_color="#3498DB", hover_color="#2980B9", 
-                command=lambda item=s: self.edit_shortcut_window(item)
-            ).pack(side="right", padx=2)
-            
-            # Pack label on the left
-            display_label = f"{s['label']} [{s['type']}]"
-            ctk.CTkLabel(row, text=display_label, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(side="left", padx=5, fill="x", expand=True)
+        
+        # Build filtered list
+        filtered_shortcuts = []
+        if search_query:
+            filtered_shortcuts = [s for s in shortcuts if search_query in s['label'].lower() or search_query in s['target'].lower() or search_query in s['type'].lower()]
+        else:
+            filtered_shortcuts = shortcuts
+
+        # Set of current active filtered shortcut IDs
+        active_ids = {s['id'] for s in filtered_shortcuts}
+
+        # Hide any cards that are not in the current filtered list
+        for sid, card in list(self.shortcut_cards.items()):
+            if sid not in active_ids:
+                card.grid_forget()
+
+        # Destroy any cards that are completely deleted from the database
+        all_ids = {s['id'] for s in shortcuts}
+        for sid in list(self.shortcut_cards.keys()):
+            if sid not in all_ids:
+                self.shortcut_cards[sid].destroy()
+                del self.shortcut_cards[sid]
+
+        columns = 5
+
+        # Layout the filtered cards
+        for index, s in enumerate(filtered_shortcuts):
+            sid = s['id']
+            # If the card doesn't exist, create it once!
+            if sid not in self.shortcut_cards:
+                icon = get_shortcut_icon(s['label'], s['type'])
+                
+                # Closures to capture correct values
+                def make_edit_cmd(item=s):
+                    return lambda: self.edit_shortcut_window(item)
+                    
+                def make_remove_cmd(shortcut_id=sid):
+                    return lambda: self.remove_shortcut(shortcut_id)
+
+                card = ShortcutCard(
+                    self.rules_scroll,
+                    icon=icon,
+                    title=s['label'],
+                    target=s['target'],
+                    shortcut_type=s['type'],
+                    on_edit=make_edit_cmd(s),
+                    on_remove=make_remove_cmd(sid)
+                )
+                self.shortcut_cards[sid] = card
+            else:
+                # Reuse existing card, but update title/target if they changed via edit
+                card = self.shortcut_cards[sid]
+                if card.title != s['label'] or card.target != s['target'] or card.shortcut_type != s['type']:
+                    card.title = s['label']
+                    card.target = s['target']
+                    card.shortcut_type = s['type']
+                    card.title_label.configure(text=card.truncate_text(s['label'], 16))
+                    card.target_label.configure(text=card.truncate_text(s['target'], 20))
+                    card.badge.configure(
+                        text=s['type'].upper(),
+                        fg_color="#205c9c" if s['type'].lower() == "app" else ("#e67e22" if s['type'].lower() == "steam" else "#2ecc71")
+                    )
+                    # Trigger async reload of the icon in case target changed
+                    import threading
+                    threading.Thread(target=card._load_icon_async, daemon=True).start()
+
+            # Place the card in the grid
+            row = index // columns
+            col = index % columns
+            card.grid(
+                row=row,
+                column=col,
+                padx=10,
+                pady=10,
+                sticky="n"
+            )
+
+        # Place or create the "+" AddCard at the end
+        add_index = len(filtered_shortcuts)
+        add_row = add_index // columns
+        add_col = add_index % columns
+
+        if self.add_card_widget:
+            self.add_card_widget.grid_forget()
+        else:
+            self.add_card_widget = AddCard(self.rules_scroll, command=self.show_add_shortcut_window)
+
+        self.add_card_widget.grid(
+            row=add_row,
+            column=add_col,
+            padx=10,
+            pady=10,
+            sticky="n"
+        )
 
     def browse_exe(self, entry_widget):
         filepath = ctk.filedialog.askopenfilename(

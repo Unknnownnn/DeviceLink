@@ -174,7 +174,7 @@ def fetch_website_favicon(url: str, size: int = 64) -> str:
 def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -> str:
     """
     Extracts the Windows icon for a given target path, short name, or steam game ID,
-    returning it as a base64 encoded PNG.
+    returning it as a base64 encoded PNG. Supports extracting UWP (Store) app icons.
     """
     # 1. Clean and resolve target path
     target_clean = target.strip()
@@ -185,64 +185,171 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
     if item_type == "steam":
         if "rungameid/" in target_clean:
             target_clean = target_clean.split("rungameid/")[-1]
-    
-    # Strip quotes
-    if target_clean.startswith('"'):
-        idx = target_clean.find('"', 1)
-        if idx != -1:
-            target_clean = target_clean[1:idx]
-    else:
-        # Strip command line arguments from the end of executable path
-        if ".exe" in target_clean.lower():
-            parts = target_clean.split()
-            for i in range(len(parts)):
-                joined = " ".join(parts[:i+1])
-                if joined.lower().endswith(".exe"):
-                    target_clean = joined
-                    break
 
-    file_path = ""
-    if item_type == "steam":
-        # Resolve Steam game icon from Steam's cache directory
-        for steam_dir in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]:
-            ico_path = os.path.join(steam_dir, "steam", "games", f"{target_clean}.ico")
-            if os.path.exists(ico_path):
-                file_path = ico_path
-                break
-        if not file_path:
-            # Fall back to steam.exe icon
-            for steam_dir in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]:
-                exe_path = os.path.join(steam_dir, "steam.exe")
-                if os.path.exists(exe_path):
-                    file_path = exe_path
-                    break
-    else:
-        # It's a regular app or file shortcut
-        if os.path.isabs(target_clean) and os.path.exists(target_clean):
-            file_path = target_clean
+    # Declare user32, gdi32, shell32 early
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    shell32 = ctypes.windll.shell32
+
+    # Common structures
+    class SHFILEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("hIcon", ctypes.c_void_p),
+            ("iIcon", ctypes.c_int),
+            ("dwAttributes", ctypes.c_uint32),
+            ("szDisplayName", ctypes.c_wchar * 260),
+            ("szTypeName", ctypes.c_wchar * 80)
+        ]
+
+    # Configure Shell32 API signatures once to avoid global type pollution in ctypes
+    shell32.SHParseDisplayName.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong)
+    ]
+    shell32.SHParseDisplayName.restype = ctypes.c_long
+
+    shell32.SHGetFileInfoW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,  # Use generic void_p to allow passing both SHFILEINFOW pointers
+        ctypes.c_uint,
+        ctypes.c_uint
+    ]
+    shell32.SHGetFileInfoW.restype = ctypes.c_void_p
+
+    hicon = None
+
+    # Handle UWP (Windows Store) apps using virtual shell:AppsFolder Parsing
+    if target_clean.lower().startswith("shell:"):
+        com_initialized = False
+        try:
+            ole32 = ctypes.windll.ole32
+            # Explicitly initialize COM on the calling thread if not already initialized
+            hr_init = ole32.CoInitialize(None)
+            if hr_init >= 0:
+                com_initialized = True
+
+            pidl = ctypes.c_void_p()
+            sfgao = ctypes.c_ulong(0)
+            hr = shell32.SHParseDisplayName(target_clean, None, ctypes.byref(pidl), 0, ctypes.byref(sfgao))
+            if hr == 0 and pidl.value:
+                shfi_pidl = SHFILEINFOW()
+                SHGFI_PIDL = 0x000000008
+                SHGFI_ICON = 0x000000100
+                SHGFI_LARGEICON = 0x000000000
+
+                shell32.SHGetFileInfoW(
+                    pidl,
+                    0,
+                    ctypes.byref(shfi_pidl),
+                    ctypes.sizeof(shfi_pidl),
+                    SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON
+                )
+                ole32.CoTaskMemFree(pidl)
+                if shfi_pidl.hIcon:
+                    hicon = shfi_pidl.hIcon
+        except Exception as e:
+            log.warning("Failed to extract UWP shell PIDL icon for %s: %s", target_clean, e)
+        finally:
+            if com_initialized:
+                try:
+                    ole32.CoUninitialize()
+                except Exception:
+                    pass
+
+    if not hicon:
+        # Standard resolving for regular files, executable paths, or classic app shortcuts
+        if target_clean.startswith('"'):
+            idx = target_clean.find('"', 1)
+            if idx != -1:
+                target_clean = target_clean[1:idx]
         else:
-            # Check system PATH
-            resolved = shutil.which(target_clean)
-            if resolved and os.path.exists(resolved):
-                file_path = resolved
-            else:
-                # Try common locations
-                windir = os.environ.get("WINDIR", "C:\\Windows")
-                for path in [
-                    os.path.join(windir, target_clean),
-                    os.path.join(windir, "System32", target_clean),
-                ]:
-                    if os.path.exists(path):
-                        file_path = path
+            # Strip command line arguments from the end of executable path
+            if ".exe" in target_clean.lower():
+                parts = target_clean.split()
+                for i in range(len(parts)):
+                    joined = " ".join(parts[:i+1])
+                    if joined.lower().endswith(".exe"):
+                        target_clean = joined
                         break
 
-    if not file_path or not os.path.exists(file_path):
-        return ""
+        file_path = ""
+        if item_type == "steam":
+            # Resolve Steam game icon from Steam's cache directory
+            for steam_dir in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]:
+                ico_path = os.path.join(steam_dir, "steam", "games", f"{target_clean}.ico")
+                if os.path.exists(ico_path):
+                    file_path = ico_path
+                    break
+            if not file_path:
+                # Fall back to steam.exe icon
+                for steam_dir in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]:
+                    exe_path = os.path.join(steam_dir, "steam.exe")
+                    if os.path.exists(exe_path):
+                        file_path = exe_path
+                        break
+        else:
+            # It's a regular app or file shortcut
+            if os.path.isabs(target_clean) and os.path.exists(target_clean):
+                file_path = target_clean
+            else:
+                # Check system PATH
+                resolved = shutil.which(target_clean)
+                if resolved and os.path.exists(resolved):
+                    file_path = resolved
+                else:
+                    # Try common locations
+                    windir = os.environ.get("WINDIR", "C:\\Windows")
+                    for path in [
+                        os.path.join(windir, target_clean),
+                        os.path.join(windir, "System32", target_clean),
+                    ]:
+                        if os.path.exists(path):
+                            file_path = path
+                            break
 
-    # Normalize path to backslashes for Windows API
-    file_path = os.path.normpath(file_path)
+        if not file_path or not os.path.exists(file_path):
+            return ""
 
-    # 2. Extract icon using ctypes
+        # Normalize path to backslashes for Windows API
+        file_path = os.path.normpath(file_path)
+
+        shfi = SHFILEINFOW()
+        SHGFI_ICON = 0x000000100
+        SHGFI_LARGEICON = 0x000000000
+        
+        res = shell32.SHGetFileInfoW(
+            ctypes.c_wchar_p(file_path),
+            0,
+            ctypes.byref(shfi),
+            ctypes.sizeof(shfi),
+            SHGFI_ICON | SHGFI_LARGEICON
+        )
+        
+        if not res or not shfi.hIcon:
+            # Fallback to ExtractIconExW if SHGetFileInfoW failed (or returned no icon)
+            phiconLarge = ctypes.c_void_p()
+            phiconSmall = ctypes.c_void_p()
+            num_extracted = shell32.ExtractIconExW(
+                file_path,
+                0,
+                ctypes.byref(phiconLarge),
+                ctypes.byref(phiconSmall),
+                1
+            )
+            if num_extracted > 0 and phiconLarge:
+                hicon = phiconLarge
+            elif num_extracted > 0 and phiconSmall:
+                hicon = phiconSmall
+            else:
+                return ""
+        else:
+            hicon = shfi.hIcon
+    
+    # 2. Proceed to draw the hicon to a bitmap and encode to Base64 PNG
     class BITMAPINFOHEADER(ctypes.Structure):
         _fields_ = [
             ("biSize", ctypes.c_uint32),
@@ -263,19 +370,6 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
             ("bmiHeader", BITMAPINFOHEADER),
             ("bmiColors", ctypes.c_uint32 * 3)
         ]
-
-    class SHFILEINFOW(ctypes.Structure):
-        _fields_ = [
-            ("hIcon", ctypes.c_void_p),
-            ("iIcon", ctypes.c_int),
-            ("dwAttributes", ctypes.c_uint32),
-            ("szDisplayName", ctypes.c_wchar * 260),
-            ("szTypeName", ctypes.c_wchar * 80)
-        ]
-
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    shell32 = ctypes.windll.shell32
 
     user32.GetDC.restype = ctypes.c_void_p
     user32.GetDC.argtypes = [ctypes.c_void_p]
@@ -309,38 +403,6 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
     ]
     gdi32.CreateDIBSection.restype = ctypes.c_void_p
 
-    shfi = SHFILEINFOW()
-    SHGFI_ICON = 0x000000100
-    SHGFI_LARGEICON = 0x000000000
-    
-    res = shell32.SHGetFileInfoW(
-        file_path,
-        0,
-        ctypes.byref(shfi),
-        ctypes.sizeof(shfi),
-        SHGFI_ICON | SHGFI_LARGEICON
-    )
-    
-    if not res or not shfi.hIcon:
-        # Fallback to ExtractIconExW if SHGetFileInfoW failed (or returned no icon)
-        phiconLarge = ctypes.c_void_p()
-        phiconSmall = ctypes.c_void_p()
-        num_extracted = shell32.ExtractIconExW(
-            file_path,
-            0,
-            ctypes.byref(phiconLarge),
-            ctypes.byref(phiconSmall),
-            1
-        )
-        if num_extracted > 0 and phiconLarge:
-            hicon = phiconLarge
-        elif num_extracted > 0 and phiconSmall:
-            hicon = phiconSmall
-        else:
-            return ""
-    else:
-        hicon = shfi.hIcon
-    
     try:
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)

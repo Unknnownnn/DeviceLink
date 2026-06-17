@@ -25,7 +25,7 @@ windows_agent/dist/
 windows_agent/*.log
 windows_agent/*.old
 windows_agent/devlinkupdate.exe
-windows_agent/server/test.py
+windows_agent/test.py
 
 
 # General OS Files
