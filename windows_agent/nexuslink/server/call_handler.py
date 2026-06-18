@@ -1,6 +1,5 @@
 import logging
 from websockets.server import WebSocketServerProtocol
-
 from nexuslink.crypto.session import SessionCipher
 from nexuslink.models import NexusMessage
 from nexuslink.server.handlers import HandlerRegistry, get_app_instance

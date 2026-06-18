@@ -961,19 +961,95 @@ class ConnectionManager @Inject constructor(
                     endTimeMs = startTimeMs + 3600_000
                 }
                 
+                val writeGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.WRITE_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val readGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                if (writeGranted && readGranted) {
+                    try {
+                        var calendarId: Long = 1
+                        val projection = arrayOf(
+                            android.provider.CalendarContract.Calendars._ID,
+                            android.provider.CalendarContract.Calendars.IS_PRIMARY
+                        )
+                        val cursor = context.contentResolver.query(
+                            android.provider.CalendarContract.Calendars.CONTENT_URI,
+                            projection,
+                            null,
+                            null,
+                            null
+                        )
+                        cursor?.use {
+                            val idCol = it.getColumnIndex(android.provider.CalendarContract.Calendars._ID)
+                            val primaryCol = it.getColumnIndex(android.provider.CalendarContract.Calendars.IS_PRIMARY)
+                            while (it.moveToNext()) {
+                                val id = it.getLong(idCol)
+                                val isPrimary = if (primaryCol >= 0) it.getInt(primaryCol) == 1 else false
+                                if (isPrimary) {
+                                    calendarId = id
+                                    break
+                                }
+                                if (calendarId == 1L) {
+                                    calendarId = id
+                                }
+                            }
+                        }
+
+                        val values = android.content.ContentValues().apply {
+                            put(android.provider.CalendarContract.Events.DTSTART, startTimeMs)
+                            put(android.provider.CalendarContract.Events.DTEND, endTimeMs)
+                            put(android.provider.CalendarContract.Events.TITLE, title)
+                            put(android.provider.CalendarContract.Events.DESCRIPTION, description)
+                            put(android.provider.CalendarContract.Events.CALENDAR_ID, calendarId)
+                            put(android.provider.CalendarContract.Events.EVENT_TIMEZONE, java.util.TimeZone.getDefault().id)
+                        }
+
+                        val uri = context.contentResolver.insert(android.provider.CalendarContract.Events.CONTENT_URI, values)
+                        if (uri != null) {
+                            addLog("Successfully created calendar event '$title' directly (ID: ${uri.lastPathSegment})")
+                        } else {
+                            addLog("Failed to insert event directly. Attempting fallback via Intent.")
+                            launchEventInsertIntent(title, description, startTimeMs, endTimeMs)
+                        }
+                    } catch (e: Exception) {
+                        addLog("Error inserting calendar event directly: ${e.message}. Attempting fallback via Intent.")
+                        launchEventInsertIntent(title, description, startTimeMs, endTimeMs)
+                    }
+                } else {
+                    addLog("Calendar permissions not granted. Attempting fallback via Intent.")
+                    launchEventInsertIntent(title, description, startTimeMs, endTimeMs)
+                }
+            }
+            "create_task" -> {
+                val title = payload.optString("event_title", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("title", "NexusLink Task")
+                val description = payload.optString("event_description", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("description", "")
+                
                 try {
-                    val intent = Intent(Intent.ACTION_INSERT).apply {
-                        data = android.provider.CalendarContract.Events.CONTENT_URI
+                    val intent = Intent("com.google.android.calendar.TASK_INSERT").apply {
+                        setClassName("com.google.android.calendar", "com.android.calendar.AllInOneActivity")
+                        putExtra("title", title)
+                        putExtra("description", description)
                         putExtra(android.provider.CalendarContract.Events.TITLE, title)
                         putExtra(android.provider.CalendarContract.Events.DESCRIPTION, description)
-                        putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, startTimeMs)
-                        putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, endTimeMs)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(intent)
-                    addLog("Opened Calendar Event creation for: $title")
+                    addLog("Opened Google Calendar Task creation for: $title")
                 } catch (e: Exception) {
-                    addLog("Error opening calendar: ${e.message}")
+                    addLog("Google Calendar Task intent not supported. Fallback to standard event...")
+                    try {
+                        val fallbackIntent = Intent(Intent.ACTION_INSERT).apply {
+                            data = android.provider.CalendarContract.Events.CONTENT_URI
+                            putExtra(android.provider.CalendarContract.Events.TITLE, "[Task] $title")
+                            putExtra(android.provider.CalendarContract.Events.DESCRIPTION, description)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(fallbackIntent)
+                        addLog("Opened fallback Event creation as Task for: $title")
+                    } catch (ex: Exception) {
+                        addLog("Error creating task: ${ex.message}")
+                    }
                 }
             }
             "dismiss_alarm" -> {
@@ -1578,6 +1654,23 @@ class ConnectionManager @Inject constructor(
                 // ignore
             }
             statusReceiver = null
+        }
+    }
+
+    private fun launchEventInsertIntent(title: String, description: String, startTimeMs: Long, endTimeMs: Long) {
+        try {
+            val intent = Intent(Intent.ACTION_INSERT).apply {
+                data = android.provider.CalendarContract.Events.CONTENT_URI
+                putExtra(android.provider.CalendarContract.Events.TITLE, title)
+                putExtra(android.provider.CalendarContract.Events.DESCRIPTION, description)
+                putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, startTimeMs)
+                putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, endTimeMs)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            addLog("Opened Calendar Event creation for: $title")
+        } catch (e: Exception) {
+            addLog("Error opening calendar: ${e.message}")
         }
     }
 }

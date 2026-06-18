@@ -481,7 +481,9 @@ async def send_shortcuts_and_icons(ws=None, cipher=None) -> None:
         
     # 2. Extract and send icons one by one asynchronously to pace network traffic
     for s in shortcuts:
-        icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
+        icon_b64 = s.get("custom_icon")
+        if not icon_b64:
+            icon_b64 = extract_shortcut_icon(s.get("target", ""), s.get("type", "app"))
         if icon_b64:
             # Short sleep to prevent network congestion/dropped packets over UDP
             await asyncio.sleep(0.12)

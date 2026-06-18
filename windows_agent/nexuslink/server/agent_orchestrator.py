@@ -947,13 +947,13 @@ class OpenRouterAgent:
             "type": "function",
             "function": {
                 "name": "control_android_device",
-                "description": "Send control commands to the connected Android mobile device (e.g. launch apps, toggle flashlight, change volume, set alarms, dismiss alarms, create calendar events/tasks, delete calendar events/tasks, change silent/ringer mode).",
+                "description": "Send control commands to the connected Android mobile device (e.g. launch apps, toggle flashlight, change volume, set alarms, dismiss alarms, create calendar events/tasks, create_task, delete calendar events/tasks, change silent/ringer mode).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["launch_app", "toggle_torch", "volume_control", "set_alarm", "dismiss_alarm", "create_calendar_event", "delete_calendar_event", "set_ringer_mode"],
+                            "enum": ["launch_app", "toggle_torch", "volume_control", "set_alarm", "dismiss_alarm", "create_calendar_event", "create_task", "delete_calendar_event", "set_ringer_mode"],
                             "description": "The control action to execute on the Android device."
                         },
                         "package_or_app_name": {
@@ -1083,6 +1083,10 @@ class OpenRouterAgent:
             "You are a secure automation assistant. You can automate tasks on this Windows PC (launch programs, search for files, "
             "open URLs, list/kill processes) and also control the user's connected Android device (launch apps, toggle flashlight/torch, "
             "control ring/media volume) using the control_android_device tool.\n\n"
+            "CALENDAR AND TASKS CREATION:\n"
+            "When the user asks to create an entry in their calendar or list:\n"
+            "- If they specify a standard appointment, meeting, or event, call control_android_device with action='create_calendar_event'.\n"
+            "- If they specify a task, todo, or reminder, call control_android_device with action='create_task'.\n\n"
             "PROCESS MANAGEMENT FLOW:\n"
             "When the user asks to close/kill/stop processes (e.g. 'close all adobe processes'):\n"
             "1. Call list_processes with a filter_name matching what the user asked for.\n"

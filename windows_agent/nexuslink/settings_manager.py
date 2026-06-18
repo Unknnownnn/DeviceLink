@@ -103,13 +103,17 @@ class SettingsManager:
             return True
         return False
 
-    def update_shortcut(self, old_id, new_label, new_type, new_target):
+    def update_shortcut(self, old_id, new_label, new_type, new_target, custom_icon=None):
         shortcuts = self.settings.get("deck_shortcuts", [])
         for s in shortcuts:
             if s["id"] == old_id:
                 s["label"] = new_label
                 s["type"] = new_type
                 s["target"] = new_target
+                if custom_icon:
+                    s["custom_icon"] = custom_icon
+                elif "custom_icon" in s:
+                    del s["custom_icon"]
                 new_id = new_label.lower().replace(" ", "_")
                 s["id"] = new_id
                 self.save()

@@ -961,7 +961,7 @@ def get_shortcut_icon(label: str, item_type: str) -> str:
 
 
 class ShortcutCard(ctk.CTkFrame):
-    def __init__(self, parent, icon, title, target, shortcut_type, on_edit, on_remove):
+    def __init__(self, parent, icon, title, target, shortcut_type, on_edit, on_remove, custom_icon=None):
         super().__init__(
             parent,
             fg_color="#252a33",
@@ -978,6 +978,7 @@ class ShortcutCard(ctk.CTkFrame):
         self.default_icon = icon
         self.on_edit = on_edit
         self.on_remove = on_remove
+        self.custom_icon = custom_icon
 
         self.badge = ctk.CTkLabel(
             self,
@@ -1033,8 +1034,9 @@ class ShortcutCard(ctk.CTkFrame):
 
         # Check in memory cache first to prevent flickering when tab re-maps
         app = self.winfo_toplevel()
-        if hasattr(app, "icon_cache") and target in app.icon_cache:
-            self.ctk_icon = app.icon_cache[target]
+        cache_key = (target, custom_icon)
+        if hasattr(app, "icon_cache") and cache_key in app.icon_cache:
+            self.ctk_icon = app.icon_cache[cache_key]
             self.icon_label.configure(image=self.ctk_icon, text="")
         else:
             # Launch async task to extract high-res icon
@@ -1058,14 +1060,17 @@ class ShortcutCard(ctk.CTkFrame):
 
     def _load_icon_async(self):
         try:
-            from nexuslink.server.ws_server import extract_shortcut_icon
-            b64_str = extract_shortcut_icon(self.target, self.shortcut_type, size=64)
-            if b64_str:
-                app = self.winfo_toplevel()
-                if hasattr(app, "ui_queue"):
-                    app.ui_queue.put(lambda: self._update_icon(b64_str))
-                else:
-                    self.after(0, lambda: self._update_icon(b64_str))
+            if self.custom_icon:
+                b64_str = self.custom_icon
+            else:
+                from nexuslink.server.ws_server import extract_shortcut_icon
+                b64_str = extract_shortcut_icon(self.target, self.shortcut_type, size=64)
+            
+            app = self.winfo_toplevel()
+            if hasattr(app, "ui_queue"):
+                app.ui_queue.put(lambda: self._update_icon(b64_str))
+            else:
+                self.after(0, lambda: self._update_icon(b64_str))
         except Exception as e:
             import sys, traceback
             print(f"Error async loading icon for {self.title}: {e}", file=sys.__stderr__)
@@ -1073,6 +1078,11 @@ class ShortcutCard(ctk.CTkFrame):
 
     def _update_icon(self, b64_str):
         try:
+            if not b64_str:
+                self.ctk_icon = None
+                self.icon_label.configure(image=None, text=self.default_icon)
+                return
+                
             import base64
             from io import BytesIO
             img_data = base64.b64decode(b64_str)
@@ -1085,7 +1095,8 @@ class ShortcutCard(ctk.CTkFrame):
             # Cache it in the main window context
             app = self.winfo_toplevel()
             if hasattr(app, "icon_cache"):
-                app.icon_cache[self.target] = self.ctk_icon
+                cache_key = (self.target, self.custom_icon)
+                app.icon_cache[cache_key] = self.ctk_icon
         except Exception as e:
             import sys
             print(f"Error setting icon for {self.title}: {e}", file=sys.__stderr__)
@@ -2137,6 +2148,7 @@ class DeviceLinkApp(ctk.CTk):
         
         all_apps = []
         active_widgets = []
+        current_limit = [50]
         
         def update_list(query=""):
             # Clear previous widgets safely
@@ -2156,8 +2168,9 @@ class DeviceLinkApp(ctk.CTk):
                 if not query_clean or query_clean in name.lower() or query_clean in appid.lower():
                     filtered.append(app)
             
-            # Slice to top 50 matches to keep UI blisteringly fast and prevent stuttering
-            display_slice = filtered[:50]
+            # Slice to current limit
+            limit = current_limit[0]
+            display_slice = filtered[:limit]
             
             if not display_slice:
                 no_match_frame = ctk.CTkFrame(apps_scroll, fg_color="transparent")
@@ -2250,9 +2263,30 @@ class DeviceLinkApp(ctk.CTk):
                     command=make_add_cmd(name, appid)
                 )
                 add_btn.pack(side="right", padx=10, pady=4)
-
+            
+            # If there are more matching items, show a "Show More Apps" button at the bottom
+            if len(filtered) > limit:
+                load_more_frame = ctk.CTkFrame(apps_scroll, fg_color="transparent")
+                load_more_frame.pack(fill="x", pady=15)
+                active_widgets.append(load_more_frame)
+                
+                def load_more():
+                    current_limit[0] += 50
+                    update_list(search_entry.get())
+                
+                load_more_btn = ctk.CTkButton(
+                    load_more_frame,
+                    text=f"Show More Apps ({len(filtered) - limit} remaining)...",
+                    fg_color="#334155",
+                    hover_color="#475569",
+                    font=("Segoe UI", 11, "bold"),
+                    command=load_more
+                )
+                load_more_btn.pack(pady=5)
+                
         # Bind modern search change
         def on_search_change(event=None):
+            current_limit[0] = 50
             update_list(search_entry.get())
             
         search_entry.bind("<KeyRelease>", on_search_change)
@@ -2348,25 +2382,46 @@ class DeviceLinkApp(ctk.CTk):
                     target=s['target'],
                     shortcut_type=s['type'],
                     on_edit=make_edit_cmd(s),
-                    on_remove=make_remove_cmd(sid)
+                    on_remove=make_remove_cmd(sid),
+                    custom_icon=s.get("custom_icon")
                 )
                 self.shortcut_cards[sid] = card
             else:
-                # Reuse existing card, but update title/target if they changed via edit
+                # Reuse existing card, but update title/target/icon if they changed via edit
                 card = self.shortcut_cards[sid]
-                if card.title != s['label'] or card.target != s['target'] or card.shortcut_type != s['type']:
+                
+                old_custom_icon = getattr(card, "custom_icon", None)
+                new_custom_icon = s.get("custom_icon")
+                icon_changed = old_custom_icon != new_custom_icon
+                
+                if (card.title != s['label'] or 
+                    card.target != s['target'] or 
+                    card.shortcut_type != s['type'] or 
+                    icon_changed):
+                    
                     card.title = s['label']
                     card.target = s['target']
                     card.shortcut_type = s['type']
+                    card.default_icon = get_shortcut_icon(s['label'], s['type'])
+                    card.custom_icon = new_custom_icon
+                    
                     card.title_label.configure(text=card.truncate_text(s['label'], 16))
                     card.target_label.configure(text=card.truncate_text(s['target'], 20))
                     card.badge.configure(
                         text=s['type'].upper(),
                         fg_color="#205c9c" if s['type'].lower() == "app" else ("#e67e22" if s['type'].lower() == "steam" else "#2ecc71")
                     )
-                    # Trigger async reload of the icon in case target changed
-                    import threading
-                    threading.Thread(target=card._load_icon_async, daemon=True).start()
+                    
+                    # If the icon changed, load it (either from cache or async extraction)
+                    app = self.winfo_toplevel()
+                    cache_key = (card.target, card.custom_icon)
+                    
+                    if hasattr(app, "icon_cache") and cache_key in app.icon_cache:
+                        card.ctk_icon = app.icon_cache[cache_key]
+                        card.icon_label.configure(image=card.ctk_icon, text="")
+                    else:
+                        import threading
+                        threading.Thread(target=card._load_icon_async, daemon=True).start()
 
             # Place the card in the grid
             row = index // columns
@@ -2491,7 +2546,7 @@ class DeviceLinkApp(ctk.CTk):
 
         edit_win = ctk.CTkToplevel(self)
         edit_win.title(f"Edit Shortcut: {old_label}")
-        edit_win.geometry("450x260")
+        edit_win.geometry("450x300")
         edit_win.resizable(False, False)
         edit_win.attributes("-topmost", True)
 
@@ -2534,12 +2589,56 @@ class DeviceLinkApp(ctk.CTk):
         )
         type_menu.grid(row=2, column=1, padx=10, pady=2, sticky="w")
 
+        # Custom Icon row
+        ctk.CTkLabel(form_frame, text="Custom Icon:").grid(row=3, column=0, sticky="w", pady=2)
+        icon_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        icon_frame.grid(row=3, column=1, padx=10, pady=2, sticky="w")
+        
+        icon_path_entry = ctk.CTkEntry(icon_frame, width=210, placeholder_text="Default extracted icon")
+        icon_path_entry.pack(side="left", padx=(0, 5))
+        
+        if s_item.get("custom_icon"):
+            icon_path_entry.configure(placeholder_text="[Custom Base64 Icon Set]")
+            
+        custom_icon_b64 = [s_item.get("custom_icon")]
+        
+        def browse_icon():
+            from tkinter import filedialog
+            import base64
+            file_path = filedialog.askopenfilename(
+                title="Select Custom Icon Image",
+                filetypes=[
+                    ("Image files", "*.png *.jpg *.jpeg *.ico *.gif *.bmp"),
+                    ("All files", "*.*")
+                ]
+            )
+            if file_path:
+                try:
+                    from PIL import Image
+                    import io
+                    img = Image.open(file_path).convert("RGBA")
+                    resample_filter = getattr(Image, 'Resampling', None)
+                    resample = resample_filter.LANCZOS if resample_filter else Image.ANTIALIAS
+                    img = img.resize((64, 64), resample)
+                    output = io.BytesIO()
+                    img.save(output, format="PNG")
+                    b64_data = base64.b64encode(output.getvalue()).decode("utf-8")
+                    custom_icon_b64[0] = b64_data
+                    icon_path_entry.delete(0, ctk.END)
+                    icon_path_entry.insert(0, os.path.basename(file_path))
+                except Exception as e:
+                    from tkinter import messagebox
+                    messagebox.showerror("Error Loading Icon", f"Could not load selected icon: {e}")
+                    
+        browse_icon_btn = ctk.CTkButton(icon_frame, text="...", width=40, command=browse_icon)
+        browse_icon_btn.pack(side="left")
+
         def save_changes():
             new_label = label_entry.get().strip()
             new_target = target_entry.get().strip()
             new_type = type_var.get()
             if new_label and new_target:
-                self.settings.update_shortcut(old_id, new_label, new_type, new_target)
+                self.settings.update_shortcut(old_id, new_label, new_type, new_target, custom_icon=custom_icon_b64[0])
                 self.refresh_rules_ui()
                 edit_win.destroy()
                 from nexuslink.server.ws_server import sync_shortcuts_to_active_peers
