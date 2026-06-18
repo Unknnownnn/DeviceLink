@@ -19,6 +19,8 @@ from nexuslink.settings_manager import SettingsManager
 
 log = logging.getLogger("nexuslink.orchestrator")
 
+active_consents: Dict[str, tuple] = {}
+
 
 class SanitizationSandbox:
     """
@@ -65,6 +67,215 @@ class SanitizationSandbox:
         except Exception as e:
             return f"Failed to count files: {e}"
 
+    async def list_directory_contents(self, path: str, is_remote: bool = False) -> str:
+        try:
+            import os
+            path = path.strip()
+            
+            # Rewrite username if needed
+            import re
+            actual_username = os.path.basename(str(Path.home()))
+            match = re.match(r'(?i)^([a-z]:[\\/]users[\\/])([^\\/]+)(.*)$', path)
+            if match:
+                prefix, path_username, rest = match.groups()
+                if path_username.lower() != actual_username.lower():
+                    path = prefix + actual_username + rest
+                    
+            # Check if drive is specified. If not, resolve relative to home directory
+            has_drive = len(path) > 1 and path[1] == ':'
+            if not has_drive:
+                clean_path = path.lstrip("\\/")
+                resolved_path = os.path.join(str(Path.home()), clean_path)
+            else:
+                resolved_path = path
+                
+            resolved_path = os.path.abspath(resolved_path)
+            resolved_lower = resolved_path.lower()
+            
+            # Check if the path is inside the user profile directory
+            base_path = str(Path.home()).lower()
+            is_inside_user_profile = resolved_lower.startswith(base_path)
+            
+            # If outside the user profile, require user consent
+            if not is_inside_user_profile:
+                import uuid
+                consent_id = str(uuid.uuid4())
+                
+                consent_payload = {
+                    "consent_id": consent_id,
+                    "target": resolved_path,
+                    "arguments": "",
+                    "app_desc": f"View directory contents of: {resolved_path}"
+                }
+                
+                if is_remote:
+                    from nexuslink.server.ws_server import send_to_all_peers
+                    await send_to_all_peers("launch_consent_request", consent_payload)
+                
+                event = asyncio.Event()
+                consent_status = {"approved": None}
+                active_consents[consent_id] = (event, consent_status)
+                
+                pc_task = None
+                if not is_remote:
+                    async def run_pc_dialog():
+                        import ctypes
+                        MB_YESNO = 0x04
+                        MB_ICONQUESTION = 0x20
+                        MB_TOPMOST = 0x40000
+                        IDYES = 6
+                        
+                        title = "AI Agent Directory Access Consent"
+                        message = f"The AI Agent is requesting permission to view files in a folder outside your profile:\n\n{resolved_path}\n\nDo you want to allow this?"
+                        
+                        res = await asyncio.to_thread(ctypes.windll.user32.MessageBoxW, 0, message, title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST)
+                        if not event.is_set():
+                            consent_status["approved"] = (res == IDYES)
+                            event.set()
+                            
+                    pc_task = asyncio.create_task(run_pc_dialog())
+                    
+                try:
+                    await event.wait()
+                finally:
+                    active_consents.pop(consent_id, None)
+                    if pc_task and not pc_task.done():
+                        import ctypes
+                        hwnd = ctypes.windll.user32.FindWindowW(None, "AI Agent Directory Access Consent")
+                        if hwnd:
+                            ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                    if is_remote:
+                        from nexuslink.server.ws_server import send_to_all_peers
+                        await send_to_all_peers("launch_consent_cancel", {"consent_id": consent_id})
+                    
+                if not consent_status["approved"]:
+                    return f"Access Denied: User rejected permission to view directory '{resolved_path}'."
+                    
+            if not os.path.exists(resolved_path):
+                return f"Error: Directory does not exist: {resolved_path}"
+                
+            if not os.path.isdir(resolved_path):
+                return f"Error: Path is a file, not a directory: {resolved_path}"
+                
+            # List directory items
+            items = os.listdir(resolved_path)
+            if not items:
+                return f"Directory '{resolved_path}' is empty."
+                
+            files_list = []
+            dirs_list = []
+            for item in items:
+                full_item_path = os.path.join(resolved_path, item)
+                if os.path.isdir(full_item_path):
+                    dirs_list.append(item + "/")
+                else:
+                    files_list.append(item)
+                    
+            # Sort lists
+            dirs_list.sort()
+            files_list.sort()
+            
+            res_str = f"Contents of '{resolved_path}':\n"
+            if dirs_list:
+                res_str += f"Folders ({len(dirs_list)}):\n" + "\n".join([f"  - {d}" for d in dirs_list]) + "\n"
+            if files_list:
+                res_str += f"Files ({len(files_list)}):\n" + "\n".join([f"  - {f}" for f in files_list]) + "\n"
+                
+            return res_str
+            
+        except Exception as e:
+            return f"Failed to list directory: {e}"
+
+    async def delete_local_file(self, path: str, is_remote: bool = False) -> str:
+        try:
+            import os
+            path = path.strip()
+            
+            # Rewrite username if needed
+            import re
+            actual_username = os.path.basename(str(Path.home()))
+            match = re.match(r'(?i)^([a-z]:[\\/]users[\\/])([^\\/]+)(.*)$', path)
+            if match:
+                prefix, path_username, rest = match.groups()
+                if path_username.lower() != actual_username.lower():
+                    path = prefix + actual_username + rest
+                    
+            # Check if drive is specified. If not, resolve relative to home directory
+            has_drive = len(path) > 1 and path[1] == ':'
+            if not has_drive:
+                clean_path = path.lstrip("\\/")
+                resolved_path = os.path.join(str(Path.home()), clean_path)
+            else:
+                resolved_path = path
+                
+            resolved_path = os.path.abspath(resolved_path)
+            
+            # Deleting files is a destructive action: ALWAYS require consent
+            import uuid
+            consent_id = str(uuid.uuid4())
+            
+            consent_payload = {
+                "consent_id": consent_id,
+                "target": resolved_path,
+                "arguments": "",
+                "app_desc": f"DELETE file: {resolved_path}"
+            }
+            
+            if is_remote:
+                from nexuslink.server.ws_server import send_to_all_peers
+                await send_to_all_peers("launch_consent_request", consent_payload)
+            
+            event = asyncio.Event()
+            consent_status = {"approved": None}
+            active_consents[consent_id] = (event, consent_status)
+            
+            pc_task = None
+            if not is_remote:
+                async def run_pc_dialog():
+                    import ctypes
+                    MB_YESNO = 0x04
+                    MB_ICONQUESTION = 0x20
+                    MB_TOPMOST = 0x40000
+                    IDYES = 6
+                    
+                    title = "AI Agent File Deletion Consent"
+                    message = f"The AI Agent is requesting permission to delete a file on your PC. Please Note this file will be PERMANENTLY DELETED and CANNOT BE RECOVERED:\n\n{resolved_path}\n\nDo you want to allow this?"
+                    
+                    res = await asyncio.to_thread(ctypes.windll.user32.MessageBoxW, 0, message, title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST)
+                    if not event.is_set():
+                        consent_status["approved"] = (res == IDYES)
+                        event.set()
+                        
+                pc_task = asyncio.create_task(run_pc_dialog())
+                
+            try:
+                await event.wait()
+            finally:
+                active_consents.pop(consent_id, None)
+                if pc_task and not pc_task.done():
+                    import ctypes
+                    hwnd = ctypes.windll.user32.FindWindowW(None, "AI Agent File Deletion Consent")
+                    if hwnd:
+                        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                if is_remote:
+                    from nexuslink.server.ws_server import send_to_all_peers
+                    await send_to_all_peers("launch_consent_cancel", {"consent_id": consent_id})
+                
+            if not consent_status["approved"]:
+                return f"Access Denied: User rejected permission to delete file '{resolved_path}'."
+                
+            if not os.path.exists(resolved_path):
+                return f"Error: File does not exist: {resolved_path}"
+                
+            if os.path.isdir(resolved_path):
+                return f"Error: Path is a directory, not a file: {resolved_path}"
+                
+            os.remove(resolved_path)
+            return f"Successfully deleted file: {resolved_path}"
+            
+        except Exception as e:
+            return f"Failed to delete file: {e}"
+
     @staticmethod
     def _find_start_menu_shortcut(app_name: str):
         """
@@ -92,7 +303,7 @@ class SanitizationSandbox:
                             return os.path.join(root, file)
         return None
 
-    def launch_application(self, target: str, arguments: str = "") -> str:
+    async def launch_application(self, target: str, arguments: str = "", is_remote: bool = False) -> str:
         """
         Launches an application or web URL.
         - Web URLs (http/https) are always allowed and opened in the default browser.
@@ -102,6 +313,25 @@ class SanitizationSandbox:
         try:
             import shutil
             target = target.strip()
+            
+            # If the path starts with C:\Users\<placeholder> or similar, replace the username part with the actual username
+            import re
+            actual_username = os.path.basename(str(Path.home()))
+            match = re.match(r'(?i)^([a-z]:[\\/]users[\\/])([^\\/]+)(.*)$', target)
+            if match:
+                prefix, path_username, rest = match.groups()
+                if path_username.lower() != actual_username.lower():
+                    target = prefix + actual_username + rest
+            
+            # Automatically resolve relative paths (or paths missing the drive/user profile prefix) relative to the user's home directory
+            has_drive = len(target) > 1 and target[1] == ':'
+            if not has_drive and not target.lower().startswith(("http://", "https://")):
+                clean_target = target.lstrip("\\/")
+                home_resolved = os.path.join(str(Path.home()), clean_target)
+                first_part = clean_target.replace("/", "\\").split("\\")[0].lower()
+                user_dirs = {"downloads", "documents", "desktop", "music", "videos", "pictures", "favorites", "links", "contacts", "searches", "saved games"}
+                if os.path.exists(home_resolved) or first_part in user_dirs:
+                    target = home_resolved
             
             if target.lower().startswith(("http://", "https://")):
                 webbrowser.open(target)
@@ -147,11 +377,72 @@ class SanitizationSandbox:
                 if c_dir:
                     allowed_directories.append(c_dir.lower().strip())
             
+            is_safe_dir = False
             if os.path.isabs(resolved_exe):
                 resolved_dir = os.path.dirname(resolved_exe).lower()
                 is_safe_dir = any(resolved_dir.startswith(allowed) for allowed in allowed_directories)
-                if not is_safe_dir:
-                    return f"Security Blocked: Executable '{target}' is located outside standard application directories. Please whitelist it in settings first."
+                
+            # If not whitelisted or in allowed folders, prompt user for security consent
+            if not is_safe_dir:
+                import uuid
+                consent_id = str(uuid.uuid4())
+                
+                app_desc = target
+                if arguments:
+                    app_desc += f" {arguments}"
+                    
+                consent_payload = {
+                    "consent_id": consent_id,
+                    "target": target,
+                    "arguments": arguments,
+                    "app_desc": app_desc
+                }
+                
+                if is_remote:
+                    from nexuslink.server.ws_server import send_to_all_peers
+                    await send_to_all_peers("launch_consent_request", consent_payload)
+                
+                event = asyncio.Event()
+                consent_status = {"approved": None}
+                active_consents[consent_id] = (event, consent_status)
+                
+                pc_task = None
+                if not is_remote:
+                    async def run_pc_dialog():
+                        import ctypes
+                        MB_YESNO = 0x04
+                        MB_ICONQUESTION = 0x20
+                        MB_TOPMOST = 0x40000
+                        IDYES = 6
+                        
+                        title = "AI Agent Security Consent"
+                        message = f"The AI Agent is requesting permission to launch an app located outside your approved directories:\n\n{app_desc}\n\nDo you want to allow this launch?"
+                        
+                        res = await asyncio.to_thread(ctypes.windll.user32.MessageBoxW, 0, message, title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST)
+                        
+                        if not event.is_set():
+                            consent_status["approved"] = (res == IDYES)
+                            event.set()
+                    
+                    pc_task = asyncio.create_task(run_pc_dialog())
+                
+                try:
+                    await event.wait()
+                finally:
+                    active_consents.pop(consent_id, None)
+                    if pc_task and not pc_task.done():
+                        # Close the PC dialog programmatically if the event was set by the mobile device
+                        import ctypes
+                        hwnd = ctypes.windll.user32.FindWindowW(None, "AI Agent Security Consent")
+                        if hwnd:
+                            ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                    # Close mobile dialog if it is still open
+                    if is_remote:
+                        from nexuslink.server.ws_server import send_to_all_peers
+                        await send_to_all_peers("launch_consent_cancel", {"consent_id": consent_id})
+                
+                if not consent_status["approved"]:
+                    return f"Launch Rejected: User denied permission to launch '{target}'."
             
             return self._execute_safe_exe(resolved_exe, arguments)
             
@@ -656,13 +947,13 @@ class OpenRouterAgent:
             "type": "function",
             "function": {
                 "name": "control_android_device",
-                "description": "Send control commands to the connected Android mobile device (e.g. launch apps like WhatsApp/Instagram, toggle flashlight/torch, change volume).",
+                "description": "Send control commands to the connected Android mobile device (e.g. launch apps, toggle flashlight, change volume, set alarms, dismiss alarms, create calendar events/tasks, delete calendar events/tasks, change silent/ringer mode).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["launch_app", "toggle_torch", "volume_control"],
+                            "enum": ["launch_app", "toggle_torch", "volume_control", "set_alarm", "dismiss_alarm", "create_calendar_event", "delete_calendar_event", "set_ringer_mode"],
                             "description": "The control action to execute on the Android device."
                         },
                         "package_or_app_name": {
@@ -683,9 +974,80 @@ class OpenRouterAgent:
                             "minimum": 0,
                             "maximum": 100,
                             "description": "Volume percentage level from 0 to 100 (required only if action is 'volume_control')."
+                        },
+                        "alarm_hour": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 23,
+                            "description": "Hour of alarm (0-23) (required only for action 'set_alarm', optional for 'dismiss_alarm')."
+                        },
+                        "alarm_minute": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 59,
+                            "description": "Minute of alarm (0-59) (required only for action 'set_alarm', optional for 'dismiss_alarm')."
+                        },
+                        "alarm_message": {
+                            "type": "string",
+                            "description": "Label/title of the alarm (optional for action 'set_alarm' and 'dismiss_alarm')."
+                        },
+                        "event_title": {
+                            "type": "string",
+                            "description": "Title/subject of the calendar event/task (required for action 'create_calendar_event' and 'delete_calendar_event')."
+                        },
+                        "event_description": {
+                            "type": "string",
+                            "description": "Description/notes of the calendar event/task (optional for action 'create_calendar_event')."
+                        },
+                        "event_start_time": {
+                            "type": "string",
+                            "description": "ISO 8601 format date-time string (e.g. '2026-06-19T08:00:00') for event start time (required for action 'create_calendar_event')."
+                        },
+                        "event_end_time": {
+                            "type": "string",
+                            "description": "ISO 8601 format date-time string (e.g. '2026-06-19T09:00:00') for event end time (optional for action 'create_calendar_event')."
+                        },
+                        "ringer_mode": {
+                            "type": "string",
+                            "enum": ["normal", "vibrate", "silent"],
+                            "description": "The target ringer mode (required only for action 'set_ringer_mode')."
                         }
                     },
                     "required": ["action"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_directory_contents",
+                "description": "Lists the files and folders within a given directory (can be relative to the user profile or absolute).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "The directory path to list, e.g. 'Downloads/OTHERS' or 'C:\\Users\\User\\Downloads'."
+                        }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_local_file",
+                "description": "Deletes a file on the local PC. This is a destructive action and ALWAYS prompts the user for consent.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "The file path to delete (can be relative to the user profile or absolute)."
+                        }
+                    },
+                    "required": ["path"]
                 }
             }
         }
@@ -697,7 +1059,7 @@ class OpenRouterAgent:
         self._conversation_history: List[Dict[str, Any]] = []
         self._max_history_messages = 30 
 
-    async def execute_command(self, prompt: str) -> str:
+    async def execute_command(self, prompt: str, is_remote: bool = False) -> str:
         settings = SettingsManager()
         api_key = settings.get_openrouter_api_key()
         if not api_key:
@@ -808,10 +1170,12 @@ class OpenRouterAgent:
                                 res = self.sandbox.create_local_directory(args.get("relative_path", ""))
                             elif name == "count_directory_files":
                                 res = self.sandbox.count_directory_files(args.get("relative_path", ""))
+                            elif name == "list_directory_contents":
+                                res = await self.sandbox.list_directory_contents(args.get("path", ""), is_remote=is_remote)
                             elif name == "launch_application":
-                                res = self.sandbox.launch_application(args.get("target", ""), args.get("arguments", ""))
+                                res = await self.sandbox.launch_application(args.get("target", ""), args.get("arguments", ""), is_remote=is_remote)
                             elif name == "launch_approved_application":
-                                res = self.sandbox.launch_application(args.get("target_name", ""), args.get("arguments", ""))
+                                res = await self.sandbox.launch_application(args.get("target_name", ""), args.get("arguments", ""), is_remote=is_remote)
                             elif name == "close_application":
                                 res = self.sandbox.close_application(args.get("target", ""))
                             elif name == "search_for_application":
@@ -820,17 +1184,101 @@ class OpenRouterAgent:
                                 res = self.sandbox.list_processes(args.get("filter_name", ""))
                             elif name == "kill_processes":
                                 res = self.sandbox.kill_processes(args.get("pids_or_names", ""))
+                            elif name == "delete_local_file":
+                                res = await self.sandbox.delete_local_file(args.get("path", ""), is_remote=is_remote)
                             elif name == "control_android_device":
-                                from nexuslink.server.ws_server import send_to_all_peers
-                                payload_data = {
-                                    "action": args.get("action"),
-                                    "package_or_app_name": args.get("package_or_app_name") or args.get("package") or args.get("app_name") or args.get("name"),
-                                    "state": args.get("state"),
-                                    "stream": args.get("stream"),
-                                    "volume_level": args.get("volume_level") or args.get("level") or args.get("volume")
-                                }
-                                await send_to_all_peers("android_action", payload_data)
-                                res = f"Successfully sent remote action request '{args.get('action')}' to Android device."
+                                action = args.get("action")
+                                has_consent = True
+                                if action in ["dismiss_alarm", "delete_calendar_event"]:
+                                    import uuid
+                                    consent_id = str(uuid.uuid4())
+                                    
+                                    if action == "dismiss_alarm":
+                                        h = args.get("alarm_hour")
+                                        m = args.get("alarm_minute")
+                                        msg = args.get("alarm_message")
+                                        desc = "Dismiss/silence alarms on Android device"
+                                        if h is not None and h >= 0:
+                                            desc += f" set for {h:02d}:{m if m is not None else 0:02d}"
+                                        elif msg:
+                                            desc += f" matching label '{msg}'"
+                                        else:
+                                            desc += " (next active alarm)"
+                                        pc_msg = f"The AI Agent is requesting permission to dismiss/silence an alarm on your Android device:\n\n{desc}\n\nDo you want to allow this?"
+                                        pc_title = "AI Agent Alarm Dismissal Consent"
+                                    else:
+                                        title = args.get("event_title") or args.get("title") or "Unknown Event"
+                                        desc = f"Delete calendar event: '{title}'"
+                                        pc_msg = f"The AI Agent is requesting permission to delete a calendar event on your Android device:\n\nEvent Title: {title}\n\nDo you want to allow this?"
+                                        pc_title = "AI Agent Calendar Deletion Consent"
+                                        
+                                    consent_payload = {
+                                        "consent_id": consent_id,
+                                        "target": action,
+                                        "arguments": "",
+                                        "app_desc": desc
+                                    }
+                                    
+                                    if is_remote:
+                                        from nexuslink.server.ws_server import send_to_all_peers
+                                        await send_to_all_peers("launch_consent_request", consent_payload)
+                                    
+                                    event = asyncio.Event()
+                                    consent_status = {"approved": None}
+                                    active_consents[consent_id] = (event, consent_status)
+                                    
+                                    pc_task = None
+                                    if not is_remote:
+                                        async def run_pc_dialog():
+                                            import ctypes
+                                            MB_YESNO = 0x04
+                                            MB_ICONQUESTION = 0x20
+                                            MB_TOPMOST = 0x40000
+                                            IDYES = 6
+                                            
+                                            res = await asyncio.to_thread(ctypes.windll.user32.MessageBoxW, 0, pc_msg, pc_title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST)
+                                            if not event.is_set():
+                                                consent_status["approved"] = (res == IDYES)
+                                                event.set()
+                                                
+                                        pc_task = asyncio.create_task(run_pc_dialog())
+                                        
+                                    try:
+                                        await event.wait()
+                                    finally:
+                                        active_consents.pop(consent_id, None)
+                                        if pc_task and not pc_task.done():
+                                            import ctypes
+                                            hwnd = ctypes.windll.user32.FindWindowW(None, pc_title)
+                                            if hwnd:
+                                                ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                                        if is_remote:
+                                            from nexuslink.server.ws_server import send_to_all_peers
+                                            await send_to_all_peers("launch_consent_cancel", {"consent_id": consent_id})
+                                        
+                                    has_consent = bool(consent_status["approved"])
+                                    
+                                if not has_consent:
+                                    res = f"Access Denied: User rejected permission to perform '{action}' on Android device."
+                                else:
+                                    from nexuslink.server.ws_server import send_to_all_peers
+                                    payload_data = {
+                                        "action": action,
+                                        "package_or_app_name": args.get("package_or_app_name") or args.get("package") or args.get("app_name") or args.get("name"),
+                                        "state": args.get("state"),
+                                        "stream": args.get("stream"),
+                                        "volume_level": args.get("volume_level") or args.get("level") or args.get("volume"),
+                                        "alarm_hour": args.get("alarm_hour"),
+                                        "alarm_minute": args.get("alarm_minute"),
+                                        "alarm_message": args.get("alarm_message"),
+                                        "event_title": args.get("event_title"),
+                                        "event_description": args.get("event_description"),
+                                        "event_start_time": args.get("event_start_time"),
+                                        "event_end_time": args.get("event_end_time"),
+                                        "ringer_mode": args.get("ringer_mode")
+                                    }
+                                    await send_to_all_peers("android_action", payload_data)
+                                    res = f"Successfully sent remote action request '{action}' to Android device."
                             else:
                                 res = f"Security Alert: Model attempted to call unauthorized tool '{name}'"
                             
@@ -866,25 +1314,46 @@ async def handle_nlp_command(
     prompt = msg.payload.get("prompt", "")
     log.info("Received NLP command: %s", prompt)
     
-    result_text = await agent.execute_command(prompt)
-    log.info("NLP Result: %s", result_text)
-    
-    response_msg = NexusMessage(
-        type="nlp_response",
-        payload={"result": result_text, "prompt": prompt}
-    )
-    if ws is not None and cipher is not None:
-        await ws.send(cipher.encrypt(response_msg.to_bytes()))
-        return
+    async def run_agent():
+        result_text = await agent.execute_command(prompt, is_remote=True)
+        log.info("NLP Result: %s", result_text)
+        
+        response_msg = NexusMessage(
+            type="nlp_response",
+            payload={"result": result_text, "prompt": prompt}
+        )
+        if ws is not None and cipher is not None:
+            try:
+                await ws.send(cipher.encrypt(response_msg.to_bytes()))
+                return
+            except Exception as e:
+                log.error("Failed to send NLP response over WebSocket: %s", e)
+                
+        from nexuslink.server import ws_server
+        relay = getattr(ws_server, "_firebase_relay", None)
+        if relay is not None:
+            relay.send_to_phone(response_msg.to_bytes())
+            log.info("Sent NLP response via Firebase relay")
+        else:
+            log.warning("No transport available for NLP response")
 
-    from nexuslink.server import ws_server
-    relay = getattr(ws_server, "_firebase_relay", None)
-    if relay is not None:
-        relay.send_to_phone(response_msg.to_bytes())
-        log.info("Sent NLP response via Firebase relay")
-    else:
-        log.warning("No transport available for NLP response")
+    asyncio.create_task(run_agent())
+
+
+async def handle_launch_consent_response(
+    msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol
+) -> None:
+    payload = msg.payload
+    consent_id = payload.get("consent_id")
+    approved = payload.get("approved", False)
+    log.info("Received launch consent response for %s: approved=%s", consent_id, approved)
+    
+    if consent_id in active_consents:
+        event, status = active_consents[consent_id]
+        status["approved"] = approved
+        event.set()
 
 
 def register(registry: HandlerRegistry) -> None:
     registry.register("nlp_command", handle_nlp_command)
+    registry.register("launch_consent_response", handle_launch_consent_response)

@@ -194,6 +194,16 @@ class FileTransferManager @Inject constructor(
 
             Log.i(TAG, "Sending file: $fileName, Size: $fileSize")
 
+            val notifId = fileId.hashCode() xor 1
+            var notification = NotificationCompat.Builder(context, "nexus_file_transfer")
+                .setContentTitle("Sending $fileName")
+                .setContentText("0%")
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setProgress(100, 0, fileSize <= 0L)
+                .setOngoing(true)
+                .build()
+            notificationManager.notify(notifId, notification)
+
             // Send start
             val startPayload = JSONObject().apply {
                 put("file_id", fileId)
@@ -208,6 +218,8 @@ class FileTransferManager @Inject constructor(
                     val buffer = ByteArray(CHUNK_SIZE)
                     var bytesRead: Int
                     var seq = 0
+                    var bytesSent = 0L
+                    var lastReportedPercent = -1
                     while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                         val chunkBytes = if (bytesRead == CHUNK_SIZE) buffer else buffer.copyOfRange(0, bytesRead)
                         val b64 = Base64.encodeToString(chunkBytes, Base64.NO_WRAP)
@@ -218,6 +230,22 @@ class FileTransferManager @Inject constructor(
                             put("data", b64)
                         }
                         connectionManager.sendMessage("file_chunk", chunkPayload)
+
+                        bytesSent += bytesRead
+                        if (fileSize > 0) {
+                            val percent = ((bytesSent.toDouble() / fileSize.toDouble()) * 100).toInt()
+                            if (percent < 100 && percent != lastReportedPercent && percent % 5 == 0) {
+                                lastReportedPercent = percent
+                                notification = NotificationCompat.Builder(context, "nexus_file_transfer")
+                                    .setContentTitle("Sending $fileName")
+                                    .setContentText("$percent%")
+                                    .setSmallIcon(android.R.drawable.ic_menu_send)
+                                    .setProgress(100, percent, false)
+                                    .setOngoing(true)
+                                    .build()
+                                notificationManager.notify(notifId, notification)
+                            }
+                        }
                     }
                 }
 
@@ -228,8 +256,27 @@ class FileTransferManager @Inject constructor(
                 connectionManager.sendMessage("file_transfer_complete", completePayload)
                 Log.i(TAG, "Sent file successfully: $fileName")
 
+                notification = NotificationCompat.Builder(context, "nexus_file_transfer")
+                    .setContentTitle("File Sent Successfully")
+                    .setContentText(fileName)
+                    .setSmallIcon(android.R.drawable.ic_menu_send)
+                    .setAutoCancel(true)
+                    .setOngoing(false)
+                    .setProgress(0, 0, false)
+                    .build()
+                notificationManager.notify(notifId, notification)
+
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to send file: \${e.message}")
+                Log.e(TAG, "Failed to send file: ${e.message}")
+                notification = NotificationCompat.Builder(context, "nexus_file_transfer")
+                    .setContentTitle("Failed to send $fileName")
+                    .setContentText(e.message ?: "Unknown error")
+                    .setSmallIcon(android.R.drawable.ic_menu_send)
+                    .setAutoCancel(true)
+                    .setOngoing(false)
+                    .setProgress(0, 0, false)
+                    .build()
+                notificationManager.notify(notifId, notification)
             }
         }
     }

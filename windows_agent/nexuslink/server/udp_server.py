@@ -275,6 +275,9 @@ class UdpServerManager:
                             payload = msg.get("payload", {})
                             client_x25519_b64 = payload.get("x25519_public_key")
                             client_ed25519_b64 = payload.get("ed25519_public_key")
+                            device_name = payload.get("device_name", "Android Device")
+                            import nexuslink.server.ws_server as ws_server
+                            ws_server._connected_device_name = device_name
                             
                             self.client_x25519_b64 = client_x25519_b64
                             self.client_ed25519_b64 = client_ed25519_b64

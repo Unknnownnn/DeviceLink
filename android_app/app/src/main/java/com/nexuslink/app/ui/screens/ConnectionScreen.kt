@@ -50,6 +50,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
@@ -105,6 +106,7 @@ fun ConnectionScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val desktopDeck by viewModel.desktopDeck.collectAsState()
+    val launchConsentRequest by viewModel.launchConsentRequest.collectAsState()
     val context = LocalContext.current
 
     var hasConnectedBefore by remember { mutableStateOf(false) }
@@ -152,6 +154,10 @@ fun ConnectionScreen(
                 if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN")
                     != PackageManager.PERMISSION_GRANTED) add("android.permission.BLUETOOTH_SCAN")
             }
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_CALENDAR)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR)
+                != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.WRITE_CALENDAR)
         }
         if (permsNeeded.isNotEmpty()) permissionsLauncher.launch(permsNeeded.toTypedArray())
     }
@@ -187,12 +193,27 @@ fun ConnectionScreen(
                     containerColor = Surface800,
                     titleContentColor = OnSurface
                 ),
+                navigationIcon = {
+                    IconButton(onClick = {
+                        onDisconnect()
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Back",
+                            tint = OnSurface
+                        )
+                    }
+                },
                 actions = {
                     IconButton(onClick = {
                         viewModel.disconnect()
                         onDisconnect()
                     }) {
-                        Icon(Icons.Default.Close, contentDescription = "Disconnect")
+                        Icon(
+                            imageVector = Icons.Default.PowerSettingsNew,
+                            contentDescription = "Disconnect",
+                            tint = Rose400
+                        )
                     }
                 }
             )
@@ -547,10 +568,17 @@ fun ConnectionScreen(
                                      colors = ButtonDefaults.buttonColors(containerColor = Blue500, contentColor = Color.White),
                                      shape = RoundedCornerShape(12.dp)
                                  ) { Text("Push Clipboard", maxLines = 1) }
+                                 val isCloud = uiState.host == "cloud"
                                  Button(
                                      onClick = { filePickerLauncher.launch("*/*") },
                                      modifier = Modifier.weight(1f),
-                                     colors = ButtonDefaults.buttonColors(containerColor = Blue400, contentColor = Color.White),
+                                     enabled = !isCloud,
+                                     colors = ButtonDefaults.buttonColors(
+                                         containerColor = Blue400,
+                                         contentColor = Color.White,
+                                         disabledContainerColor = Surface700,
+                                         disabledContentColor = OnSurfaceDim
+                                     ),
                                      shape = RoundedCornerShape(12.dp)
                                  ) { Text("Send File", maxLines = 1) }
                              }
@@ -980,6 +1008,79 @@ fun ConnectionScreen(
             confirmButton = {
                 TextButton(onClick = { nlpResponseDialogText = null }) {
                     Text("Close")
+                }
+            }
+        )
+    }
+
+    launchConsentRequest?.let { request ->
+        val promptText = when {
+            request.appDesc.startsWith("DELETE file:") || request.appDesc.startsWith("DELETE file on PC:") ->
+                "The AI Agent is requesting permission to delete a file on your PC. Please Note this file will be PERMANENTLY DELETED and CANNOT BE RECOVERED:"
+            request.appDesc.startsWith("Dismiss/silence") ->
+                "The AI Agent is requesting permission to control your Android device. :"
+            request.appDesc.startsWith("Delete calendar event:") ->
+                "The AI Agent is requesting permission to control your Android device:"
+            request.appDesc.startsWith("View directory") ->
+                "The AI Agent is requesting permission to view directory contents on your PC:"
+            else ->
+                "The AI Agent is requesting permission to launch an app on your PC located outside approved directories:"
+        }
+        val confirmQuestion = when {
+            request.appDesc.startsWith("DELETE file:") || request.appDesc.startsWith("DELETE file on PC:") ->
+                "Do you want to allow this deletion? "
+            request.appDesc.startsWith("Dismiss/silence") || request.appDesc.startsWith("Delete calendar event:") ->
+                "Do you want to allow this action?"
+            request.appDesc.startsWith("View directory") ->
+                "Do you want to allow viewing these files?"
+            else ->
+                "Do you want to allow this launch?"
+        }
+
+        AlertDialog(
+            onDismissRequest = {
+                viewModel.respondToLaunchConsent(request.consentId, false)
+            },
+            title = { Text("AI Agent Security Consent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        promptText,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = request.appDesc,
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = confirmQuestion,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.respondToLaunchConsent(request.consentId, false)
+                }) {
+                    Text("No", color = Rose400)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.respondToLaunchConsent(request.consentId, true)
+                }) {
+                    Text("Yes", color = MaterialTheme.colorScheme.primary)
                 }
             }
         )

@@ -3,6 +3,7 @@ package com.nexuslink.app.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -286,15 +287,18 @@ fun DeviceListScreen(
             if (devices.isEmpty()) {
                 EmptyDiscoveryState()
             } else {
+                val activeFingerprint by viewModel.activeFingerprint.collectAsState()
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(16.dp),
                 ) {
                     itemsIndexed(devices) { index, device ->
+                        val isConnected = device.fingerprint != null && device.fingerprint == activeFingerprint
                         AnimatedDeviceCard(
                             device = device,
                             index = index,
+                            isConnected = isConnected,
                             onClick = { onDeviceSelected(device.host, device.port, device.isPaired, device.fingerprint) },
                         )
                     }
@@ -310,6 +314,7 @@ fun DeviceListScreen(
 private fun AnimatedDeviceCard(
     device: NexusDevice,
     index: Int,
+    isConnected: Boolean,
     onClick: () -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
@@ -322,17 +327,48 @@ private fun AnimatedDeviceCard(
         visible = visible,
         enter = fadeIn() + slideInVertically { it / 3 },
     ) {
-        DeviceCard(device = device, onClick = onClick)
+        DeviceCard(device = device, isConnected = isConnected, onClick = onClick)
     }
 }
 
 @Composable
-private fun DeviceCard(device: NexusDevice, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
+private fun DeviceCard(device: NexusDevice, isConnected: Boolean, onClick: () -> Unit) {
+    val cardModifier = if (isConnected) {
+        val infiniteTransition = rememberInfiniteTransition(label = "glowTransition")
+        val glowAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.2f,
+            targetValue = 0.7f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "glowAlpha"
+        )
+        val glowRadiusRaw by infiniteTransition.animateFloat(
+            initialValue = 4f,
+            targetValue = 8f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "glowRadius"
+        )
+        val glowRadius = glowRadiusRaw.dp
+        Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .border(1.dp, Surface600, RoundedCornerShape(16.dp)),
+            .border(glowRadius, Emerald400.copy(alpha = glowAlpha), RoundedCornerShape(16.dp))
+            .padding(1.5.dp)
+            .border(2.dp, Emerald400, RoundedCornerShape(16.dp))
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .border(1.dp, Surface600, RoundedCornerShape(16.dp))
+    }
+
+    Card(
+        modifier = cardModifier,
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface800),
     ) {

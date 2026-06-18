@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import org.json.JSONArray
 
 private const val TAG = "ConnectionViewModel"
 
@@ -52,6 +53,8 @@ class ConnectionViewModel @Inject constructor(
     val deckShortcuts = connectionManager.deckShortcuts
     val bluetoothConnected = connectionManager.bluetoothConnected
     val desktopDeck = connectionManager.desktopDeck
+    val launchConsentRequest = connectionManager.launchConsentRequest
+
 
 
 
@@ -68,13 +71,59 @@ class ConnectionViewModel @Inject constructor(
 
     init {
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+        _aiChatHistory.value = loadChatHistory()
         viewModelScope.launch {
             nlpResponses.collect { response ->
                 val prompt = lastNlpPrompt ?: "AI Command"
                 val newMsg = ChatMessage(prompt, response)
-                _aiChatHistory.update { it + newMsg }
+                _aiChatHistory.update { current ->
+                    val updated = current + newMsg
+                    val limited = if (updated.size > 30) updated.takeLast(30) else updated
+                    saveChatHistory(limited)
+                    limited
+                }
             }
         }
+    }
+
+    private fun saveChatHistory(history: List<ChatMessage>) {
+        try {
+            val prefs = context.getSharedPreferences("ai_chat_prefs", Context.MODE_PRIVATE)
+            val jsonArray = JSONArray()
+            for (msg in history) {
+                val obj = JSONObject().apply {
+                    put("prompt", msg.prompt)
+                    put("response", msg.response)
+                    put("timestamp", msg.timestamp)
+                }
+                jsonArray.put(obj)
+            }
+            prefs.edit().putString("chat_history", jsonArray.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save chat history: ${e.message}")
+        }
+    }
+
+    private fun loadChatHistory(): List<ChatMessage> {
+        val prefs = context.getSharedPreferences("ai_chat_prefs", Context.MODE_PRIVATE)
+        val historyStr = prefs.getString("chat_history", null) ?: return emptyList()
+        val history = mutableListOf<ChatMessage>()
+        try {
+            val jsonArray = JSONArray(historyStr)
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                history.add(
+                    ChatMessage(
+                        prompt = obj.getString("prompt"),
+                        response = obj.getString("response"),
+                        timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load chat history: ${e.message}")
+        }
+        return history
     }
 
     fun connect(host: String, port: Int, peerFingerprint: String) {
@@ -105,6 +154,7 @@ class ConnectionViewModel @Inject constructor(
 
     fun clearChatHistory() {
         _aiChatHistory.value = emptyList()
+        saveChatHistory(emptyList())
     }
 
     fun sendPowerCommand(action: String) {
@@ -139,6 +189,10 @@ class ConnectionViewModel @Inject constructor(
 
     fun saveDesktopDeckApps(apps: List<org.json.JSONObject>) {
         connectionManager.saveDesktopDeckApps(apps)
+    }
+
+    fun respondToLaunchConsent(consentId: String, approved: Boolean) {
+        connectionManager.respondToLaunchConsent(consentId, approved)
     }
 
     override fun onCleared() {

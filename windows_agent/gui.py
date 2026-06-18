@@ -70,7 +70,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -137,10 +137,10 @@ def create_tray_image():
     return image
 
 
-def set_file_progress(filename, bytes_sent, total_bytes):
+def set_file_progress(filename, bytes_sent, total_bytes, direction="send"):
     app = getattr(DeviceLinkApp, "_instance", None)
     if app:
-        app.after(0, lambda: app.show_file_progress(filename, bytes_sent, total_bytes))
+        app.after(0, lambda: app.show_file_progress(filename, bytes_sent, total_bytes, direction))
 
 
 class SignalPulseLoader(ctk.CTkCanvas):
@@ -659,7 +659,7 @@ class RelaySuccessAnimation(ctk.CTkCanvas):
             self.create_text(
                 self.width_val / 2,
                 y + 80,
-                text="CONNECTED VIA SECURE RELAY",
+                text="CONNECTED VIA CLOUD RELAY",
                 fill=color,
                 font=("Segoe UI", 12, "bold")
             )
@@ -673,7 +673,7 @@ class AgentCanvas(ctk.CTkCanvas):
             highlightthickness=0,
             **kwargs
         )
-        self.agent_state = "idle"  # idle, thinking, transition, streaming
+        self.agent_state = "idle"  
         self.start_time = time.time()
         self.target_x = 60
         self.target_y = 60
@@ -911,8 +911,6 @@ def get_installed_start_apps():
     import subprocess
     import json
     try:
-        # Merged PowerShell query using both Get-StartApps and Shell COM object for virtual AppsFolder.
-        # This guarantees UWP Store apps like WhatsApp are found even if not indexed in the Start Menu.
         cmd_str = (
             "$apps = @(); "
             "try { $apps += Get-StartApps | Select-Object Name, @{Name='AppID';Expression={$_.AppID}} } catch {}; "
@@ -924,7 +922,6 @@ def get_installed_start_apps():
             "$apps | Group-Object AppID | Foreach { $_.Group[0] } | ConvertTo-Json -Compress"
         )
         cmd = ["powershell", "-NoProfile", "-Command", cmd_str]
-        # 0x08000000 corresponds to CREATE_NO_WINDOW to prevent PowerShell console flashing
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=0x08000000)
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
@@ -982,7 +979,6 @@ class ShortcutCard(ctk.CTkFrame):
         self.on_edit = on_edit
         self.on_remove = on_remove
 
-        # Badge on the top-left
         self.badge = ctk.CTkLabel(
             self,
             text=shortcut_type.upper(),
@@ -994,7 +990,6 @@ class ShortcutCard(ctk.CTkFrame):
         )
         self.badge.place(x=8, y=8)
 
-        # Options Button (3 dots) on top-right
         self.menu_btn = ctk.CTkButton(
             self,
             text="⋮",
@@ -1253,13 +1248,44 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.status_title.pack(anchor="w")
 
+        info_row = ctk.CTkFrame(status_frame, fg_color="transparent")
+        info_row.pack(anchor="w", pady=(2, 5))
+
         self.status_info = ctk.CTkLabel(
-            status_frame, 
+            info_row, 
             text="Open the Android app to connect.", 
             text_color="gray",
             font=ctk.CTkFont(size=12)
         )
-        self.status_info.pack(anchor="w", pady=(2, 5))
+        self.status_info.pack(side="left", anchor="w")
+
+        self.show_ip_port = False
+
+        self.eye_btn = ctk.CTkButton(
+            info_row,
+            text="👁",
+            width=22,
+            height=18,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#334155",
+            text_color="gray",
+            corner_radius=4,
+            command=self.toggle_ip_port_visibility
+        )
+
+        self.details_btn = ctk.CTkButton(
+            info_row,
+            text="ℹ",
+            width=22,
+            height=18,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#334155",
+            text_color="gray",
+            corner_radius=4,
+            command=self.show_device_details
+        )
 
         # Center area for animation and status
         self.center_status_frame = ctk.CTkFrame(self.tab_status, fg_color="transparent")
@@ -1342,6 +1368,24 @@ class DeviceLinkApp(ctk.CTk):
         self.progress_bar.set(0.0)
         self.progress_bar.pack(fill="x", padx=10, pady=(2, 5))
 
+        self.open_folder_btn = ctk.CTkButton(
+            self.progress_frame,
+            text="📁 Open Downloads Folder",
+            width=180,
+            height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#10B981",
+            hover_color="#059669",
+            command=self.open_downloads_folder
+        )
+
+    def open_downloads_folder(self):
+        import os
+        from pathlib import Path
+        path = Path.home() / "Downloads" / "DeviceLink_Downloads"
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(path))
 
     def show_qr_code(self):
         from config import DEVICELINK_DIR
@@ -1410,6 +1454,46 @@ class DeviceLinkApp(ctk.CTk):
         self.log_textbox.see("end")
         self.log_textbox.configure(state="disabled")
 
+    def toggle_ip_port_visibility(self):
+        self.show_ip_port = not self.show_ip_port
+        if self.show_ip_port:
+            self.eye_btn.configure(text_color="#3B82F6")
+        else:
+            self.eye_btn.configure(text_color="gray")
+        self.refresh_connection_status(force=True)
+
+    def show_device_details(self):
+        from tkinter import messagebox
+        from nexuslink.server.ws_server import get_connected_device_name, get_active_peers, get_cloud_relay_active
+        from nexuslink.server.udp_server import get_active_udp_peer
+        
+        device_name = get_connected_device_name()
+        peers = get_active_peers()
+        udp_peer = get_active_udp_peer()
+        cloud_active = get_cloud_relay_active()
+        
+        if peers:
+            conn_type = "mDNS / LAN (Wi-Fi)"
+            address = ", ".join(f"{p[0]}:{p[1]}" for p in peers)
+        elif udp_peer:
+            conn_type = "STUN UDP Hole Punching (Direct P2P)"
+            address = f"{udp_peer[0]}:{udp_peer[1]}"
+        elif cloud_active:
+            conn_type = "Firebase Cloud Relay (Fallback WAN)"
+            address = "Relayed through Cloud Realtime DB"
+        else:
+            conn_type = "None"
+            address = "N/A"
+            
+        info_msg = (
+            f"Connected Device Information:\n\n"
+            f"• Device Name/Model: {device_name}\n"
+            f"• Connection Method: {conn_type}\n"
+            f"• Network Address: {address}\n\n"
+            f"Status: Secure & Encrypted"
+        )
+        messagebox.showinfo("Connected Device Details", info_msg)
+
     def send_file_to_device(self):
         from nexuslink.server.udp_server import get_active_udp_peer
         if get_active_udp_peer():
@@ -1428,7 +1512,6 @@ class DeviceLinkApp(ctk.CTk):
         )
         if filepath and os.path.exists(filepath):
             filename = os.path.basename(filepath)
-            # Start background thread to send the file directly
             threading.Thread(target=self._send_file_worker, args=(filepath, filename), daemon=True).start()
 
     def _send_file_worker(self, filepath, filename):
@@ -1491,31 +1574,53 @@ class DeviceLinkApp(ctk.CTk):
             self.after(0, lambda: self.progress_label.configure(text=f"Error sending '{filename}'"))
             self.after(3000, self.hide_file_progress)
 
-    def _update_progress_from_thread(self, filename, bytes_sent, file_size):
-        self.after(0, lambda: self.show_file_progress(filename, bytes_sent, file_size))
+    def _update_progress_from_thread(self, filename, bytes_sent, file_size, direction="send"):
+        self.after(0, lambda: self.show_file_progress(filename, bytes_sent, file_size, direction))
 
-    def show_file_progress(self, filename, bytes_sent, total_bytes):
+    def show_file_progress(self, filename, bytes_sent, total_bytes, direction="send"):
         try:
             if not self.progress_frame.winfo_viewable():
                 self.progress_frame.pack(fill="x", padx=10, pady=(10, 0))
             
             pct = float(bytes_sent) / float(total_bytes) if total_bytes > 0 else 0.0
-            pct_text = f"Sending '{filename}'... {int(pct * 100)}%"
+            
+            if direction == "receive":
+                pct_text = f"Receiving '{filename}'... {int(pct * 100)}%"
+            else:
+                pct_text = f"Sending '{filename}'... {int(pct * 100)}%"
             
             self.progress_label.configure(text=pct_text)
             self.progress_bar.set(pct)
             
             if bytes_sent >= total_bytes:
-                self.progress_label.configure(text=f"Sent '{filename}' successfully!")
-                self.progress_bar.set(1.0)
-                # Hide the progress frame after 3 seconds
-                self.after(3000, self.hide_file_progress)
+                if direction == "receive":
+                    self.progress_label.configure(text=f"Received '{filename}' successfully!")
+                    self.progress_bar.set(1.0)
+                    self.open_folder_btn.pack(anchor="w", padx=10, pady=(5, 5))
+                    # Hide the progress frame after 8 seconds to give time to click Open Folder
+                    if hasattr(self, "_hide_progress_timer") and getattr(self, "_hide_progress_timer", None):
+                        try:
+                            self.after_cancel(self._hide_progress_timer)
+                        except Exception:
+                            pass
+                    self._hide_progress_timer = self.after(8000, self.hide_file_progress)
+                else:
+                    self.progress_label.configure(text=f"Sent '{filename}' successfully!")
+                    self.progress_bar.set(1.0)
+                    if hasattr(self, "_hide_progress_timer") and getattr(self, "_hide_progress_timer", None):
+                        try:
+                            self.after_cancel(self._hide_progress_timer)
+                        except Exception:
+                            pass
+                    self._hide_progress_timer = self.after(3000, self.hide_file_progress)
         except Exception as e:
             print(f"[Console] Error updating file progress: {e}")
 
     def hide_file_progress(self):
         try:
+            self._hide_progress_timer = None
             self.progress_frame.pack_forget()
+            self.open_folder_btn.pack_forget()
             self.progress_bar.set(0.0)
         except Exception:
             pass
@@ -1555,15 +1660,16 @@ class DeviceLinkApp(ctk.CTk):
 
     def refresh_connection_status(self, force=False):
         try:
-            from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active
+            from nexuslink.server.ws_server import get_active_peers, get_cloud_relay_active, get_connected_device_name
             from nexuslink.server.udp_server import get_active_udp_peer
             peers = get_active_peers()
             udp_peer = get_active_udp_peer()
             cloud_relay_active = get_cloud_relay_active()
+            device_name = get_connected_device_name() or "Android Device"
 
             # Create a unique key representing the current connection state to check for changes
             peers_key = tuple(sorted(peers)) if peers else ()
-            current_status = (peers_key, udp_peer, cloud_relay_active)
+            current_status = (peers_key, udp_peer, cloud_relay_active, device_name)
 
             if not force and self.last_status == current_status:
                 return
@@ -1573,7 +1679,7 @@ class DeviceLinkApp(ctk.CTk):
             # Detect transition from disconnected/waiting to connected
             was_waiting = True
             if self.last_status:
-                prev_peers, prev_udp, prev_cloud = self.last_status
+                prev_peers, prev_udp, prev_cloud, prev_name = self.last_status
                 if prev_peers or prev_udp or prev_cloud:
                     was_waiting = False
 
@@ -1582,7 +1688,9 @@ class DeviceLinkApp(ctk.CTk):
 
             if peers:
                 peer_str = ", ".join(f"{p[0]}:{p[1]}" for p in peers)
-                self.status_base_text = f"Connected via mDNS/LAN: {peer_str}"
+                base_txt = f"Connected via mDNS/LAN to {device_name}"
+                full_txt = f"{base_txt} ({peer_str})" if self.show_ip_port else base_txt
+                self.status_base_text = full_txt
                 self.status_dot.configure(text="✔", text_color="#10B981") # Green
                 self.status_text.configure(text=self.status_base_text, text_color="#10B981")
                 self.set_phone_tab_state("normal")
@@ -1601,10 +1709,16 @@ class DeviceLinkApp(ctk.CTk):
                 self.connected_anim.start()
                 self.status_info.configure(text=self.status_base_text, text_color="#10B981")
                 
+                # Pack eye and details buttons
+                self.eye_btn.pack(side="left", padx=(8, 0))
+                self.details_btn.pack(side="left", padx=(4, 0))
+                
                 if was_waiting:
                     self.run_checkmark_pulse(0)
             elif udp_peer:
-                self.status_base_text = f"Connected via STUN UDP: {udp_peer[0]}:{udp_peer[1]}"
+                base_txt = f"Connected via STUN UDP to {device_name}"
+                full_txt = f"{base_txt} ({udp_peer[0]}:{udp_peer[1]})" if self.show_ip_port else base_txt
+                self.status_base_text = full_txt
                 self.status_dot.configure(text="✔", text_color="#3B82F6") # Blue
                 self.status_text.configure(text=self.status_base_text, text_color="#3B82F6")
                 self.set_phone_tab_state("normal")
@@ -1623,12 +1737,17 @@ class DeviceLinkApp(ctk.CTk):
                 self.connected_anim.start()
                 self.status_info.configure(text=self.status_base_text, text_color="#3B82F6")
                 
+                # Pack eye and details buttons
+                self.eye_btn.pack(side="left", padx=(8, 0))
+                self.details_btn.pack(side="left", padx=(4, 0))
+                
                 if was_waiting:
                     self.run_checkmark_pulse(0)
             else:
                 self.send_file_btn.configure(state="disabled")
                 if cloud_relay_active:
-                    self.status_base_text = "Connected via Cloud Relay"
+                    base_txt = f"Connected via Cloud Relay to {device_name}"
+                    self.status_base_text = base_txt
                     self.status_dot.configure(text="✔", text_color="#06B6D4") # Cyan
                     self.status_text.configure(text=self.status_base_text, text_color="#06B6D4")
                     self.set_phone_tab_state("disabled")
@@ -1645,6 +1764,10 @@ class DeviceLinkApp(ctk.CTk):
                     self.relay_anim.pack(anchor="center", pady=(10, 10))
                     self.relay_anim.start()
                     self.status_info.configure(text=self.status_base_text, text_color="#06B6D4")
+                    
+                    # Hide eye (no IP/port to show), pack details button
+                    self.eye_btn.pack_forget()
+                    self.details_btn.pack(side="left", padx=(8, 0))
                     
                     if was_waiting:
                         self.run_checkmark_pulse(0)
@@ -1666,6 +1789,10 @@ class DeviceLinkApp(ctk.CTk):
                     self.pulse_loader.start()
                     self.conn_status_frame.pack(anchor="center", pady=(5, 10))
                     self.status_info.configure(text="Open the Android app to connect.", text_color="gray")
+                    
+                    # Hide eye and details buttons
+                    self.eye_btn.pack_forget()
+                    self.details_btn.pack_forget()
             
             # Keep telemetry sync state in sync with connection state
             self.update_telemetry_sync_state()
@@ -1744,7 +1871,7 @@ class DeviceLinkApp(ctk.CTk):
 
         state_cat = "waiting"
         if self.last_status:
-            peers_key, udp_peer, cloud_relay_active = self.last_status
+            peers_key, udp_peer, cloud_relay_active = self.last_status[:3]
             if peers_key:
                 state_cat = "mdns"
             elif udp_peer:
@@ -1761,12 +1888,10 @@ class DeviceLinkApp(ctk.CTk):
                 pass
             self.status_animation_task = self.after(1000, self.run_status_animation)
         else:
-            # Static text for connected states (no trailing cycling dots)
             try:
                 self.status_text.configure(text=base_text)
             except Exception:
                 pass
-            # Slow check (1000ms) to monitor status changes with zero CPU usage
             self.status_animation_task = self.after(1000, self.run_status_animation)
 
     def append_logs_to_ui(self, msgs):
@@ -4444,19 +4569,16 @@ class DeviceLinkApp(ctk.CTk):
         self.battery_progress.set(battery_level / 100.0)
         
         if is_charging:
-            self.battery_state_label.configure(text="Charging", text_color="#06B6D4")
-            self.battery_progress.configure(progress_color="#06B6D4")
+            self.battery_state_label.configure(text="Charging", text_color="#22D3EE")
+            self.battery_progress.configure(progress_color="#22D3EE")
             self.battery_icon_label.configure(text="🔌🔋")
         else:
             self.battery_state_label.configure(text="Discharging", text_color="#94A3B8")
             self.battery_icon_label.configure(text="🔋")
             if battery_level <= 20:
-                self.battery_progress.configure(progress_color="#EF4444")
+                self.battery_progress.configure(progress_color="#F87171")
             else:
-                if primary_color:
-                    self.battery_progress.configure(progress_color=primary_color)
-                else:
-                    self.battery_progress.configure(progress_color="#10B981")
+                    self.battery_progress.configure(progress_color="#34D399")
 
         ringer_mode = payload.get("ringer_mode", "normal")
         if ringer_mode == "normal":

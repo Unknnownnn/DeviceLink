@@ -63,9 +63,11 @@ class DiscoveryViewModel @Inject constructor(
         connectionManager.uiState.map { it.connectionState }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ConnectionState.Disconnected)
 
-    private val activePeerFingerprint: StateFlow<String?> =
-        connectionManager.uiState.map { it.peerFingerprint }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val activeFingerprint: StateFlow<String?> =
+        connectionManager.uiState.map { 
+            if (it.connectionState is ConnectionState.Connected) it.peerFingerprint else null 
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val trustedPeers = peerStore.peers
 
@@ -85,7 +87,7 @@ class DiscoveryViewModel @Inject constructor(
             refreshTrigger.flatMapLatest { discoveryManager.discoverDevices() },
             peerStore.peers,
             cloudRelayTimestamps,
-            activePeerFingerprint,
+            activeFingerprint,
             timeTickFlow
         ) { discovered, trustedPeers, timestamps, activeFingerprint, currentTime ->
             _isScanning.value = true

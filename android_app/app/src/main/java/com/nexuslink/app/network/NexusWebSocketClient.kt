@@ -148,6 +148,7 @@ class NexusWebSocketClient(
             put("payload", JSONObject().apply {
                 put("x25519_public_key", handshake.publicKeyB64)
                 put("ed25519_public_key", identity.publicKeyB64)
+                put("device_name", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             })
         }
         ws.send(hello.toString().toByteArray().toByteString())

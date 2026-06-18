@@ -85,6 +85,16 @@ class ConnectionManager @Inject constructor(
     private val _incomingCallEvents = MutableSharedFlow<IncomingCallInfo>()
     val incomingCallEvents: SharedFlow<IncomingCallInfo> = _incomingCallEvents
 
+    data class LaunchConsentRequest(
+        val consentId: String,
+        val target: String,
+        val arguments: String,
+        val appDesc: String
+    )
+    private val _launchConsentRequest = MutableStateFlow<LaunchConsentRequest?>(null)
+    val launchConsentRequest: StateFlow<LaunchConsentRequest?> = _launchConsentRequest
+
+
     // ── Bluetooth HFP state ─────────────────────────────────────────────────
     val bluetoothConnected: StateFlow<Boolean> = CallBridgeManager.bluetoothConnected
 
@@ -560,7 +570,7 @@ class ConnectionManager @Inject constructor(
             ) }
             addLog("Stage 3: STUN failed. Falling back to Firebase Cloud Relay.")
             addLog("Connected securely via Cloud Relay.")
-            sendMessage("request_sync", JSONObject())
+            sendMessage("request_sync", JSONObject().apply { put("device_name", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}") })
             startHeartbeatLoop(isUdp = false)
         }
     }
@@ -607,6 +617,21 @@ class ConnectionManager @Inject constructor(
                     }
                 }
                 _deckShortcuts.value = updated
+            }
+        } else if (event.type == "launch_consent_request") {
+            val consentId = event.payload.optString("consent_id", "")
+            val target = event.payload.optString("target", "")
+            val arguments = event.payload.optString("arguments", "")
+            val appDesc = event.payload.optString("app_desc", "")
+            if (consentId.isNotBlank()) {
+                addLog("Received launch consent request for $target")
+                _launchConsentRequest.value = LaunchConsentRequest(consentId, target, arguments, appDesc)
+            }
+        } else if (event.type == "launch_consent_cancel") {
+            val consentId = event.payload.optString("consent_id", "")
+            if (_launchConsentRequest.value?.consentId == consentId) {
+                addLog("Launch consent request cancelled")
+                _launchConsentRequest.value = null
             }
         } else if (event.type == "make_call") {
             val number = event.payload.optString("number", "")
@@ -846,7 +871,7 @@ class ConnectionManager @Inject constructor(
                 }
             }
             "set_ringer_mode" -> {
-                val mode = payload.optString("mode", "normal")
+                val mode = payload.optString("ringer_mode", "").takeIf { it.isNotBlank() } ?: payload.optString("mode", "normal")
                 val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 try {
                     val ringerMode = when (mode.lowercase()) {
@@ -858,6 +883,189 @@ class ConnectionManager @Inject constructor(
                     addLog("Ringer mode set to: $mode")
                 } catch (e: Exception) {
                     addLog("Error setting ringer mode: ${e.message}")
+                }
+            }
+            "set_alarm" -> {
+                val hour = payload.optInt("alarm_hour", -1).takeIf { it != -1 }
+                    ?: payload.optInt("hour", -1)
+                val minute = payload.optInt("alarm_minute", -1).takeIf { it != -1 }
+                    ?: payload.optInt("minute", 0)
+                val message = payload.optString("alarm_message", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("message", "NexusLink Alarm")
+                
+                if (hour in 0..23) {
+                    try {
+                        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+                            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+                            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+                            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, message)
+                            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                        addLog("Set alarm successfully for $hour:$minute with message: $message")
+                    } catch (e: Exception) {
+                        addLog("Error setting alarm: ${e.message}")
+                    }
+                } else {
+                    addLog("Error setting alarm: Invalid or missing hour ($hour)")
+                }
+            }
+            "create_calendar_event" -> {
+                val title = payload.optString("event_title", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("title", "NexusLink Task")
+                val description = payload.optString("event_description", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("description", "")
+                val startTimeStr = payload.optString("event_start_time", "")
+                val endTimeStr = payload.optString("event_end_time", "")
+                
+                var startTimeMs = System.currentTimeMillis() + 3600_000 // default 1 hour from now
+                var endTimeMs = startTimeMs + 3600_000 // default event duration: 1 hour
+                
+                if (startTimeStr.isNotBlank()) {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            val formatter = java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME
+                            val localDateTime = java.time.LocalDateTime.parse(startTimeStr.substringBefore("+").substringBefore("Z"), formatter)
+                            startTimeMs = localDateTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                        } else {
+                            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                            val date = sdf.parse(startTimeStr.substringBefore("+").substringBefore("Z"))
+                            if (date != null) {
+                                startTimeMs = date.time
+                            }
+                        }
+                    } catch (e: Exception) {
+                        addLog("Calendar: Failed to parse start time '$startTimeStr', using default")
+                    }
+                }
+                
+                if (endTimeStr.isNotBlank()) {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            val formatter = java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME
+                            val localDateTime = java.time.LocalDateTime.parse(endTimeStr.substringBefore("+").substringBefore("Z"), formatter)
+                            endTimeMs = localDateTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                        } else {
+                            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                            val date = sdf.parse(endTimeStr.substringBefore("+").substringBefore("Z"))
+                            if (date != null) {
+                                endTimeMs = date.time
+                            }
+                        }
+                    } catch (e: Exception) {
+                        addLog("Calendar: Failed to parse end time '$endTimeStr', using start time + 1hr")
+                        endTimeMs = startTimeMs + 3600_000
+                    }
+                } else {
+                    endTimeMs = startTimeMs + 3600_000
+                }
+                
+                try {
+                    val intent = Intent(Intent.ACTION_INSERT).apply {
+                        data = android.provider.CalendarContract.Events.CONTENT_URI
+                        putExtra(android.provider.CalendarContract.Events.TITLE, title)
+                        putExtra(android.provider.CalendarContract.Events.DESCRIPTION, description)
+                        putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, startTimeMs)
+                        putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, endTimeMs)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    addLog("Opened Calendar Event creation for: $title")
+                } catch (e: Exception) {
+                    addLog("Error opening calendar: ${e.message}")
+                }
+            }
+            "dismiss_alarm" -> {
+                val hour = payload.optInt("alarm_hour", -1).takeIf { it != -1 }
+                    ?: payload.optInt("hour", -1)
+                val minute = payload.optInt("alarm_minute", -1).takeIf { it != -1 }
+                    ?: payload.optInt("minute", -1)
+                val message = payload.optString("alarm_message", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("message", "")
+                
+                try {
+                    val intent = Intent(android.provider.AlarmClock.ACTION_DISMISS_ALARM).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+                        
+                        if (hour in 0..23) {
+                            putExtra(android.provider.AlarmClock.EXTRA_ALARM_SEARCH_MODE, android.provider.AlarmClock.ALARM_SEARCH_MODE_TIME)
+                            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+                            if (minute in 0..59) {
+                                putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+                            } else {
+                                putExtra(android.provider.AlarmClock.EXTRA_MINUTES, 0)
+                            }
+                            addLog("Dismissing alarm at $hour:${if (minute in 0..59) minute else 0}")
+                        } else if (message.isNotBlank()) {
+                            putExtra(android.provider.AlarmClock.EXTRA_ALARM_SEARCH_MODE, android.provider.AlarmClock.ALARM_SEARCH_MODE_LABEL)
+                            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, message)
+                            addLog("Dismissing alarm with label: $message")
+                        } else {
+                            putExtra(android.provider.AlarmClock.EXTRA_ALARM_SEARCH_MODE, android.provider.AlarmClock.ALARM_SEARCH_MODE_NEXT)
+                            addLog("Dismissing the next active alarm")
+                        }
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    addLog("Error dismissing alarm: ${e.message}")
+                }
+            }
+            "delete_calendar_event" -> {
+                val title = payload.optString("event_title", "").takeIf { it.isNotBlank() }
+                    ?: payload.optString("title", "")
+                if (title.isBlank()) {
+                    addLog("Error: delete_calendar_event requires a valid event_title")
+                } else {
+                    val readGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    val writeGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.WRITE_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                    if (!readGranted || !writeGranted) {
+                        addLog("Error: Calendar permissions are not granted. Please allow them in the app settings.")
+                    } else {
+                        try {
+                            val cr = context.contentResolver
+                            val projection = arrayOf(android.provider.CalendarContract.Events._ID)
+                            val selection = "${android.provider.CalendarContract.Events.TITLE} = ?"
+                            val selectionArgs = arrayOf(title)
+
+                            val cursor = cr.query(
+                                android.provider.CalendarContract.Events.CONTENT_URI,
+                                projection,
+                                selection,
+                                selectionArgs,
+                                null
+                            )
+
+                            var deletedCount = 0
+                            if (cursor != null) {
+                                while (cursor.moveToNext()) {
+                                    val idIndex = cursor.getColumnIndex(android.provider.CalendarContract.Events._ID)
+                                    if (idIndex >= 0) {
+                                        val eventId = cursor.getLong(idIndex)
+                                        val deleteUri = android.content.ContentUris.withAppendedId(
+                                            android.provider.CalendarContract.Events.CONTENT_URI,
+                                            eventId
+                                        )
+                                        val rows = cr.delete(deleteUri, null, null)
+                                        if (rows > 0) {
+                                            deletedCount++
+                                        }
+                                    }
+                                }
+                                cursor.close()
+                            }
+
+                            if (deletedCount > 0) {
+                                addLog("Successfully deleted $deletedCount calendar event(s) titled '$title'")
+                            } else {
+                                addLog("No calendar events found matching the title '$title'")
+                            }
+                        } catch (e: Exception) {
+                            addLog("Error deleting calendar event: ${e.message}")
+                        }
+                    }
                 }
             }
             "set_vibrate" -> {
@@ -1071,6 +1279,18 @@ class ConnectionManager @Inject constructor(
         val payload = JSONObject().apply { put("enable", enable) }
         sendMessage("subscribe_logs", payload)
     }
+
+    fun respondToLaunchConsent(consentId: String, approved: Boolean) {
+        val payload = JSONObject().apply {
+            put("consent_id", consentId)
+            put("approved", approved)
+        }
+        sendMessage("launch_consent_response", payload)
+        if (_launchConsentRequest.value?.consentId == consentId) {
+            _launchConsentRequest.value = null
+        }
+    }
+
 
     fun syncPhoneStatusAndWallpaper() {
         if (!telemetrySyncActive) return

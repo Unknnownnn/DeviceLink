@@ -18,7 +18,7 @@ HKDF_SALT = b"devicelink-hkdf-salt-v1"
 SESSION_KEY_LEN = 32                     
 NONCE_LEN = 12                          
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 QR_BORDER = 1
 QR_BOX_SIZE = 1                          
 DEVICELINK_DIR.mkdir(parents=True, exist_ok=True)

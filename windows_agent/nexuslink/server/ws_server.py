@@ -45,6 +45,11 @@ active_peers = set()
 active_sessions = []
 _loop = None
 _cloud_clipboard_task = None
+_connected_device_name = "Android Device"
+
+def get_connected_device_name() -> str:
+    global _connected_device_name
+    return _connected_device_name
 
 log_subscribers = set()
 firebase_wants_logs = False
@@ -628,11 +633,14 @@ class NexusLinkServer:
                 return
 
             if msg.type == "request_sync":
+                device_name = msg.payload.get("device_name", "Android Device")
+                global _connected_device_name
+                _connected_device_name = device_name
                 if _loop:
                     _loop.call_soon_threadsafe(_set_cloud_relay_active, True)
             
             if msg.type == "request_sync":
-                print("[Server] ← Firebase Cloud Relay connection established!")
+                print(f"[Server] ← Firebase Cloud Relay connection established with {device_name}!")
                 print("[Server] ✓ Secure session active via Cloud")
                 
             if _loop:
@@ -754,6 +762,9 @@ class NexusLinkServer:
 
         client_x25519_b64: str = hello.payload["x25519_public_key"]
         client_ed25519_b64: str = hello.payload["ed25519_public_key"]
+        device_name: str = hello.payload.get("device_name", "Android Device")
+        global _connected_device_name
+        _connected_device_name = device_name
 
         log.info("HELLO received from client (ed25519: %s…)", client_ed25519_b64[:12])
 
