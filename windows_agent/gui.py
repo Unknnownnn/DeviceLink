@@ -70,7 +70,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.5.1"
+VERSION = "1.5.3"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -4132,6 +4132,14 @@ class DeviceLinkApp(ctk.CTk):
         except Exception as e:
             print(f"[GUI] Error sending open_notification_settings: {e}")
 
+    def request_open_app_details_settings(self):
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("android_action", {"action": "open_app_details"})
+            print("[GUI] Sent open_app_details action to Android")
+        except Exception as e:
+            print(f"[GUI] Error sending open_app_details: {e}")
+
     def handle_sync_notifications(self, payload):
         if not hasattr(self, "notif_container") or not self.notif_container or not self.notif_container.winfo_exists():
             return
@@ -4147,26 +4155,58 @@ class DeviceLinkApp(ctk.CTk):
             
             if error == "permission_denied":
                 msg_text = "Notification Access Restricted.\nPlease enable Notification Access in Android settings.\n\n(If blocked, go to Phone Settings ➔ Apps ➔ DeviceLink ➔ tap ⋮ in top right ➔ 'Allow restricted settings')"
+                
+                ctk.CTkLabel(
+                    frame,
+                    text=msg_text,
+                    text_color="#EF4444",
+                    font=ctk.CTkFont(size=11, weight="normal"),
+                    wraplength=320
+                ).pack(pady=(0, 10))
+                
+                btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+                btn_frame.pack(fill="x", pady=5)
+                
+                ctk.CTkButton(
+                    btn_frame,
+                    text="Open Settings",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    fg_color="#EF4444",
+                    hover_color="#DC2626",
+                    height=28,
+                    command=self.request_open_notification_settings
+                ).pack(side="left", padx=5)
+
+                ctk.CTkButton(
+                    btn_frame,
+                    text="Allow Restricted Settings",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    fg_color="#F59E0B",
+                    hover_color="#D97706",
+                    text_color="black",
+                    height=28,
+                    command=self.request_open_app_details_settings
+                ).pack(side="left", padx=5)
             else:
                 msg_text = "Notification Listener Unbound.\nPlease toggle Notification Access OFF and ON again in Phone Settings to reactivate syncing."
-
-            ctk.CTkLabel(
-                frame,
-                text=msg_text,
-                text_color="#EF4444",
-                font=ctk.CTkFont(size=11, weight="normal"),
-                wraplength=320
-            ).pack(pady=(0, 10))
-            
-            ctk.CTkButton(
-                frame,
-                text="Open Phone Settings",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                fg_color="#EF4444",
-                hover_color="#DC2626",
-                height=28,
-                command=self.request_open_notification_settings
-            ).pack()
+                
+                ctk.CTkLabel(
+                    frame,
+                    text=msg_text,
+                    text_color="#EF4444",
+                    font=ctk.CTkFont(size=11, weight="normal"),
+                    wraplength=320
+                ).pack(pady=(0, 10))
+                
+                ctk.CTkButton(
+                    frame,
+                    text="Open Notification Settings",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    fg_color="#EF4444",
+                    hover_color="#DC2626",
+                    height=28,
+                    command=self.request_open_notification_settings
+                ).pack()
             return
 
         notifications = payload.get("notifications", [])

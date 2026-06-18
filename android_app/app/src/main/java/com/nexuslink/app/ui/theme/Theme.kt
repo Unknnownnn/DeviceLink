@@ -1,9 +1,11 @@
 package com.nexuslink.app.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
 private val NexusDarkColorScheme = darkColorScheme(
@@ -42,6 +44,14 @@ fun NexusLinkTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = NexusDarkColorScheme,
         typography = NexusTypography,
-        content = content,
-    )
+    ) {
+        // Surface fills the entire screen including behind status/nav bars so
+        // enableEdgeToEdge() doesn't leave black bars at top and bottom.
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            content()
+        }
+    }
 }

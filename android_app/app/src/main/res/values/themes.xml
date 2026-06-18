@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.NexusLink" parent="android:Theme.DeviceDefault.NoActionBar">
-        <!-- Customize your light theme here. -->
+        <!-- Window background matches Surface900 — no black flash on launch -->
+        <item name="android:windowBackground">#FF0F172A</item>
+        <!-- Status bar matches TopAppBar (Surface800) — seamless look -->
+        <item name="android:statusBarColor">#FF1E293B</item>
+        <!-- Nav bar matches app background (Surface900) -->
+        <item name="android:navigationBarColor">#FF0F172A</item>
+        <!-- Light icons (white) for dark bar backgrounds -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>

@@ -701,6 +701,18 @@ class ConnectionManager @Inject constructor(
                     addLog("Error opening notification settings: ${e.message}")
                 }
             }
+            "open_app_details" -> {
+                try {
+                    val intent = Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    context.startActivity(intent)
+                    addLog("Opened App details settings screen to allow restricted settings")
+                } catch (e: Exception) {
+                    addLog("Error opening app details settings: ${e.message}")
+                }
+            }
             "launch_app" -> {
                 val prefs = context.getSharedPreferences("nexuslink_preferences", Context.MODE_PRIVATE)
                 val isBatterySaver = prefs.getBoolean("battery_saver_enabled", false)
