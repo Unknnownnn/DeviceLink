@@ -40,6 +40,9 @@ class PreferencesManager @Inject constructor(
     private val _phoneSyncEnabled = MutableStateFlow(prefs.getBoolean("phone_sync_enabled", true))
     val phoneSyncEnabled: StateFlow<Boolean> = _phoneSyncEnabled
 
+    private val _clipImageSyncEnabled = MutableStateFlow(prefs.getBoolean("clip_image_sync_enabled", true))
+    val clipImageSyncEnabled: StateFlow<Boolean> = _clipImageSyncEnabled
+
     fun setAutoConnectEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("auto_connect_enabled", enabled).apply()
         _autoConnectEnabled.value = enabled
@@ -80,6 +83,11 @@ class PreferencesManager @Inject constructor(
         _phoneSyncEnabled.value = enabled
     }
 
+    fun setClipImageSyncEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("clip_image_sync_enabled", enabled).apply()
+        _clipImageSyncEnabled.value = enabled
+    }
+
     fun isBgLaunchActive(): Boolean {
         return !_batterySaverEnabled.value && _bgLaunchEnabled.value
     }
@@ -90,5 +98,9 @@ class PreferencesManager @Inject constructor(
 
     fun isPhoneSyncActive(): Boolean {
         return !_batterySaverEnabled.value && _phoneSyncEnabled.value
+    }
+
+    fun isClipImageSyncActive(): Boolean {
+        return !_batterySaverEnabled.value && _clipImageSyncEnabled.value
     }
 }

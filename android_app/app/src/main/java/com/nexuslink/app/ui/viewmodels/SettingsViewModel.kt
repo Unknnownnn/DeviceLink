@@ -22,6 +22,7 @@ class SettingsViewModel @Inject constructor(
     val bgLaunchEnabled: StateFlow<Boolean> = preferencesManager.bgLaunchEnabled
     val notifSyncEnabled: StateFlow<Boolean> = preferencesManager.notifSyncEnabled
     val phoneSyncEnabled: StateFlow<Boolean> = preferencesManager.phoneSyncEnabled
+    val clipImageSyncEnabled: StateFlow<Boolean> = preferencesManager.clipImageSyncEnabled
 
     fun setAutoConnectEnabled(enabled: Boolean) {
         preferencesManager.setAutoConnectEnabled(enabled)
@@ -45,6 +46,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setPhoneSyncEnabled(enabled: Boolean) {
         preferencesManager.setPhoneSyncEnabled(enabled)
+    }
+
+    fun setClipImageSyncEnabled(enabled: Boolean) {
+        preferencesManager.setClipImageSyncEnabled(enabled)
     }
 
     fun removeTrustedPeer(fingerprint: String) {

@@ -458,6 +458,7 @@ fun SettingsScreen(
             val bgLaunchEnabled by viewModel.bgLaunchEnabled.collectAsState()
             val notifSyncEnabled by viewModel.notifSyncEnabled.collectAsState()
             val phoneSyncEnabled by viewModel.phoneSyncEnabled.collectAsState()
+            val clipImageSyncEnabled by viewModel.clipImageSyncEnabled.collectAsState()
 
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -642,6 +643,40 @@ fun SettingsScreen(
                                     checked = if (batterySaverEnabled) false else phoneSyncEnabled,
                                     enabled = !batterySaverEnabled,
                                     onCheckedChange = { viewModel.setPhoneSyncEnabled(it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = Blue400,
+                                        uncheckedThumbColor = OnSurfaceDim,
+                                        uncheckedTrackColor = Surface600
+                                    )
+                                )
+                            }
+
+                            HorizontalDivider(color = Surface600.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+                            // Toggle 4: Clipboard Image Syncing
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Clipboard Image Syncing",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (batterySaverEnabled) OnSurfaceDim else Color.White
+                                    )
+                                    Text(
+                                        text = "Sync and receive images copied on your PC to paste on the phone.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceDim
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Switch(
+                                    checked = if (batterySaverEnabled) false else clipImageSyncEnabled,
+                                    enabled = !batterySaverEnabled,
+                                    onCheckedChange = { viewModel.setClipImageSyncEnabled(it) },
                                     colors = SwitchDefaults.colors(
                                         checkedThumbColor = Color.White,
                                         checkedTrackColor = Blue400,

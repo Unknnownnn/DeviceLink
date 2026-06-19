@@ -17,6 +17,7 @@ import android.util.Log
 import com.nexuslink.app.data.IdentityManager
 import com.nexuslink.app.data.PeerStore
 import com.nexuslink.app.data.TrustedPeer
+import com.nexuslink.app.data.PreferencesManager
 import com.nexuslink.app.services.CallBridgeManager
 import com.nexuslink.app.services.ConnManagerProxy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -56,6 +57,7 @@ class ConnectionManager @Inject constructor(
     private val identity: IdentityManager,
     private val peerStore: PeerStore,
     private val discoveryManager: NsdDiscoveryManager,
+    private val preferencesManager: PreferencesManager,
     private val fileTransferManagerLazy: dagger.Lazy<FileTransferManager>
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -400,8 +402,12 @@ class ConnectionManager @Inject constructor(
                             is SessionEvent.ClipboardImageUpdate -> {
                                 val imageB64 = event.imageB64
                                 if (imageB64.isNotBlank()) {
-                                    addLog("Received image clipboard from PC")
-                                    _clipboardImageUpdates.emit(imageB64)
+                                    if (preferencesManager.isClipImageSyncActive()) {
+                                        addLog("Received image clipboard from PC")
+                                        _clipboardImageUpdates.emit(imageB64)
+                                    } else {
+                                        addLog("Ignored image clipboard from PC (Clipboard Image Sync disabled / Battery Saver active)")
+                                    }
                                 }
                             }
                             else -> {}
@@ -551,8 +557,12 @@ class ConnectionManager @Inject constructor(
                             is SessionEvent.ClipboardImageUpdate -> {
                                 val imageB64 = event.imageB64
                                 if (imageB64.isNotBlank()) {
-                                    addLog("Received image clipboard from PC")
-                                    _clipboardImageUpdates.emit(imageB64)
+                                    if (preferencesManager.isClipImageSyncActive()) {
+                                        addLog("Received image clipboard from PC")
+                                        _clipboardImageUpdates.emit(imageB64)
+                                    } else {
+                                        addLog("Ignored image clipboard from PC (Clipboard Image Sync disabled / Battery Saver active)")
+                                    }
                                 }
                             }
                             else -> {}
