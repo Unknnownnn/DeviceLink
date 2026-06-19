@@ -176,7 +176,7 @@ class FileTransferManager @Inject constructor(
         }
     }
 
-    fun sendFile(uri: Uri) {
+    fun sendFile(uri: Uri, isGallery: Boolean = false) {
         scope.launch {
             val resolver = context.contentResolver
             val fileId = UUID.randomUUID().toString()
@@ -209,6 +209,9 @@ class FileTransferManager @Inject constructor(
                 put("file_id", fileId)
                 put("file_name", fileName)
                 put("file_size", fileSize)
+                if (isGallery) {
+                    put("is_gallery", true)
+                }
             }
             connectionManager.sendMessage("file_transfer_start", startPayload)
 

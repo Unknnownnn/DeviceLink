@@ -147,14 +147,17 @@ def format_file_size(bytes_size):
 
 
 def set_file_progress(filename, bytes_sent, total_bytes, direction="send"):
-    app = getattr(DeviceLinkApp, "_instance", None)
+    try:
+        from nexuslink.server.handlers import get_app_instance
+        app = get_app_instance() or getattr(DeviceLinkApp, "_instance", None)
+    except Exception:
+        app = getattr(DeviceLinkApp, "_instance", None)
     if app:
         app.after(0, lambda: app.show_file_progress(filename, bytes_sent, total_bytes, direction))
 
 
 class SignalPulseLoader(ctk.CTkCanvas):
     def __init__(self, master, width=280, height=280, max_radius=110, **kwargs):
-        # Resolve background color dynamically to blend in
         bg_color = kwargs.pop("bg", None)
         if bg_color is None:
             bg_color = self._get_parent_bg(master)
@@ -1608,6 +1611,9 @@ class DeviceLinkApp(ctk.CTk):
             
             if direction == "receive":
                 pct_text = f"Receiving '{filename}'... {int(pct * 100)}%"
+                if hasattr(self, "gallery_win") and self.gallery_win and self.gallery_win.winfo_exists():
+                    if hasattr(self, "gallery_status_lbl") and self.gallery_status_lbl:
+                        self.gallery_status_lbl.configure(text=f"Downloading '{filename}'... {int(pct * 100)}%")
             else:
                 pct_text = f"Sending '{filename}'... {int(pct * 100)}%"
             
@@ -1620,6 +1626,11 @@ class DeviceLinkApp(ctk.CTk):
                     self.progress_bar.set(1.0)
                     self.open_folder_btn.pack(anchor="w", padx=10, pady=(5, 5))
                     
+                    # Gallery window single item download hook
+                    if hasattr(self, "gallery_win") and self.gallery_win and self.gallery_win.winfo_exists():
+                        if hasattr(self, "gallery_status_lbl") and self.gallery_status_lbl:
+                            self.gallery_status_lbl.configure(text=f"Downloaded '{filename}' successfully!")
+                    
                     # Gallery entire sync integration hook
                     if hasattr(self, "gallery_win") and self.gallery_win and getattr(self, "entire_sync_in_progress", False):
                         if filename == getattr(self, "entire_sync_current_filename", None):
@@ -1630,6 +1641,17 @@ class DeviceLinkApp(ctk.CTk):
                                     pass
                                 self.entire_sync_timeout_id = None
                             self.after(500, self.download_next_entire_sync_item)
+                    
+                    # Gallery batch selected download hook
+                    if hasattr(self, "gallery_win") and self.gallery_win and getattr(self, "selected_download_in_progress", False):
+                        if filename == getattr(self, "selected_download_current_filename", None):
+                            if hasattr(self, "selected_download_timeout_id") and self.selected_download_timeout_id:
+                                try:
+                                    self.after_cancel(self.selected_download_timeout_id)
+                                except Exception:
+                                    pass
+                                self.selected_download_timeout_id = None
+                            self.after(500, self.download_next_selected_item)
                     # Hide the progress frame after 8 seconds to give time to click Open Folder
                     if hasattr(self, "_hide_progress_timer") and getattr(self, "_hide_progress_timer", None):
                         try:
@@ -2853,7 +2875,6 @@ class DeviceLinkApp(ctk.CTk):
         self.settings_win.resizable(False, False)
         
         # Force transient and topmost so it sits nicely in front of main dashboard
-        self.settings_win.transient(self)
         self.settings_win.attributes("-topmost", True)
         
         # Header
@@ -4380,31 +4401,33 @@ class DeviceLinkApp(ctk.CTk):
 
         self.gallery_win = ctk.CTkToplevel(self)
         self.gallery_win.title("Android Photo & Video Gallery")
-        self.gallery_win.geometry("850x650")
+        self.gallery_win.geometry("900x650")
         self.gallery_win.attributes("-topmost", True)
-        self.gallery_win.transient(self)
 
-        # Main Layout: Left Sidebar for controls, Right Area for Grid
         self.gallery_sidebar = ctk.CTkFrame(self.gallery_win, width=220, fg_color="#0F172A", corner_radius=0)
         self.gallery_sidebar.pack(side="left", fill="y")
         self.gallery_sidebar.pack_propagate(False)
 
-        # Options Title
-        ctk.CTkLabel(
+        # Checkbox for Photos and Videos
+        self.gallery_photo_var = ctk.BooleanVar(value=True)
+        self.chk_photos = ctk.CTkCheckBox(
             self.gallery_sidebar,
-            text="Gallery Control",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#F8FAFC"
-        ).pack(anchor="w", padx=20, pady=(20, 15))
+            text="Include Photos",
+            variable=self.gallery_photo_var,
+            font=ctk.CTkFont(size=12),
+            text_color="#F8FAFC",
+            command=self.on_gallery_media_type_change
+        )
+        self.chk_photos.pack(anchor="w", padx=20, pady=10)
 
-        # Checkbox for Videos
-        self.gallery_video_var = ctk.BooleanVar(value=False)
+        self.gallery_video_var = ctk.BooleanVar(value=True)
         self.chk_videos = ctk.CTkCheckBox(
             self.gallery_sidebar,
             text="Include Videos",
             variable=self.gallery_video_var,
             font=ctk.CTkFont(size=12),
-            text_color="#F8FAFC"
+            text_color="#F8FAFC",
+            command=self.on_gallery_media_type_change
         )
         self.chk_videos.pack(anchor="w", padx=20, pady=10)
 
@@ -4421,7 +4444,8 @@ class DeviceLinkApp(ctk.CTk):
             self.gallery_sidebar,
             values=["Date", "Size"],
             variable=self.gallery_sort_by,
-            font=ctk.CTkFont(size=12)
+            font=ctk.CTkFont(size=12),
+            command=self.on_gallery_sort_by_change
         )
         self.cmb_sort_by.pack(anchor="w", padx=20, pady=5)
 
@@ -4433,14 +4457,47 @@ class DeviceLinkApp(ctk.CTk):
             text_color="#94A3B8"
         ).pack(anchor="w", padx=20, pady=(10, 2))
 
-        self.gallery_sort_order = ctk.StringVar(value="Newest/Largest")
+        self.gallery_sort_order = ctk.StringVar(value="Latest")
         self.cmb_sort_order = ctk.CTkComboBox(
             self.gallery_sidebar,
-            values=["Newest/Largest", "Oldest/Smallest"],
+            values=["Latest", "Oldest"],
             variable=self.gallery_sort_order,
             font=ctk.CTkFont(size=12)
         )
         self.cmb_sort_order.pack(anchor="w", padx=20, pady=5)
+
+        ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="Items to Load Next:",
+            font=ctk.CTkFont(size=12, weight="normal"),
+            text_color="#94A3B8"
+        ).pack(anchor="w", padx=20, pady=(10, 2))
+
+        self.lbl_limit_val = ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="20",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#F8FAFC"
+        )
+        self.lbl_limit_val.pack(anchor="w", padx=20, pady=(0, 2))
+
+        def on_limit_slider_change(val):
+            int_val = int(float(val))
+            self.gallery_limit = int_val
+            self.lbl_limit_val.configure(text=str(int_val))
+            if hasattr(self, "gallery_load_more_btn") and self.gallery_load_more_btn:
+                self.gallery_load_more_btn.configure(text=f"Load Next {int_val} Items")
+
+        self.slider_limit = ctk.CTkSlider(
+            self.gallery_sidebar,
+            from_=5,
+            to=100,
+            number_of_steps=19,
+            command=on_limit_slider_change
+        )
+        self.slider_limit.pack(fill="x", padx=20, pady=5)
+        self.slider_limit.set(20)
+        self.gallery_limit = 20
 
         # Refresh / Sync Button
         self.btn_refresh_gallery = ctk.CTkButton(
@@ -4452,10 +4509,10 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.btn_refresh_gallery.pack(fill="x", padx=20, pady=(25, 10))
 
-        # Sync Entire Gallery Button
+        # Download Entire Gallery Button
         self.btn_entire_sync = ctk.CTkButton(
             self.gallery_sidebar,
-            text="Sync Entire Gallery",
+            text="Download Entire Gallery",
             height=32,
             fg_color="#10B981",
             hover_color="#059669",
@@ -4463,6 +4520,19 @@ class DeviceLinkApp(ctk.CTk):
             command=self.toggle_entire_gallery_sync
         )
         self.btn_entire_sync.pack(fill="x", padx=20, pady=10)
+
+        # Download Selected Button
+        self.btn_download_selected = ctk.CTkButton(
+            self.gallery_sidebar,
+            text="Download Selected (0)",
+            height=32,
+            fg_color="#3B82F6",
+            hover_color="#2563EB",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.download_selected_gallery_items,
+            state="disabled"
+        )
+        self.btn_download_selected.pack(fill="x", padx=20, pady=10)
 
         # Progress elements for entire sync
         self.entire_sync_progress_lbl = ctk.CTkLabel(
@@ -4487,17 +4557,18 @@ class DeviceLinkApp(ctk.CTk):
         # Scrollable container for photos
         self.gallery_scroll = ctk.CTkScrollableFrame(self.gallery_main_panel)
         self.gallery_scroll.pack(fill="both", expand=True, padx=15, pady=(15, 5))
+        self.gallery_scroll.bind("<Configure>", self.on_gallery_scroll_configure)
 
         # Grid container inside the scrollable container
         self.gallery_grid = ctk.CTkFrame(self.gallery_scroll, fg_color="transparent")
         self.gallery_grid.pack(fill="both", expand=True)
-        for i in range(4):
+        for i in range(3):
             self.gallery_grid.columnconfigure(i, weight=1, minsize=190)
 
         # Load More Button
         self.gallery_load_more_btn = ctk.CTkButton(
             self.gallery_scroll,
-            text="Load Next 20 Items",
+            text=f"Load Next {self.gallery_limit} Items",
             height=28,
             command=self.load_more_gallery
         )
@@ -4523,8 +4594,167 @@ class DeviceLinkApp(ctk.CTk):
         self.entire_sync_index = 0
         self.entire_sync_cancel = False
         self.entire_sync_current_filename = None
+        
+        self.selected_gallery_uris = set()
+        self.selected_gallery_items = {}
+        self.gallery_select_vars = {}
+        self.selected_download_in_progress = False
+        self.gallery_cols = 3
 
         self.gallery_win.protocol("WM_DELETE_WINDOW", self.close_gallery_window)
+        self.on_gallery_media_type_change()
+
+    def on_gallery_sort_by_change(self, value):
+        if value == "Date":
+            self.cmb_sort_order.configure(values=["Latest", "Oldest"])
+            self.gallery_sort_order.set("Latest")
+        else:
+            self.cmb_sort_order.configure(values=["Largest", "Smallest"])
+            self.gallery_sort_order.set("Largest")
+
+    def on_gallery_media_type_change(self):
+        photos_on = self.gallery_photo_var.get()
+        videos_on = self.gallery_video_var.get()
+        
+        if not photos_on:
+            self.chk_videos.configure(state="disabled")
+        else:
+            self.chk_videos.configure(state="normal")
+            
+        if not videos_on:
+            self.chk_photos.configure(state="disabled")
+        else:
+            self.chk_photos.configure(state="normal")
+
+    def on_gallery_scroll_configure(self, event):
+        width = event.width
+        avail_width = width - 24
+        cols = max(1, avail_width // 194)
+        
+        if not hasattr(self, "gallery_cols") or self.gallery_cols != cols:
+            self.gallery_cols = cols
+            self.reposition_gallery_cards()
+
+    def reposition_gallery_cards(self):
+        if not hasattr(self, "gallery_items") or not self.gallery_items:
+            return
+        cols = getattr(self, "gallery_cols", 3)
+        
+        for i in range(25):
+            try:
+                self.gallery_grid.columnconfigure(i, weight=0, minsize=0)
+            except Exception:
+                pass
+                
+        for i in range(cols):
+            self.gallery_grid.columnconfigure(i, weight=1, minsize=190)
+            
+        for idx, item in enumerate(self.gallery_items):
+            uri = item.get("uri")
+            card = self.gallery_cards.get(uri)
+            if card and card.winfo_exists():
+                row = idx // cols
+                col = idx % cols
+                card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+
+    def toggle_gallery_selection(self, var, chk, item):
+        new_val = not var.get()
+        var.set(new_val)
+        chk.select() if new_val else chk.deselect()
+        self.on_gallery_item_select(item, var)
+
+    def on_gallery_item_select(self, item, var):
+        uri = item.get("uri")
+        card = self.gallery_cards.get(uri)
+        if var.get():
+            if uri not in self.selected_gallery_uris:
+                self.selected_gallery_uris.add(uri)
+                self.selected_gallery_items[uri] = item
+            if card:
+                card.configure(border_color="#3B82F6", border_width=2)
+        else:
+            self.selected_gallery_uris.discard(uri)
+            self.selected_gallery_items.pop(uri, None)
+            if card:
+                card.configure(border_width=0)
+        self.update_download_selected_btn_state()
+
+    def update_download_selected_btn_state(self):
+        count = len(self.selected_gallery_uris)
+        if count > 0:
+            self.btn_download_selected.configure(
+                state="normal", 
+                text=f"Download Selected ({count})"
+            )
+        else:
+            self.btn_download_selected.configure(
+                state="disabled", 
+                text="Download Selected (0)"
+            )
+
+    def clear_gallery_selection(self):
+        self.selected_gallery_uris.clear()
+        self.selected_gallery_items.clear()
+        for uri, select_var in self.gallery_select_vars.items():
+            try:
+                select_var.set(False)
+            except Exception:
+                pass
+        for card in self.gallery_cards.values():
+            try:
+                card.configure(border_width=0)
+            except Exception:
+                pass
+        self.update_download_selected_btn_state()
+
+    def download_selected_gallery_items(self):
+        if not self.selected_gallery_uris:
+            return
+        self.btn_download_selected.configure(state="disabled", text="Downloading...")
+        self.selected_download_in_progress = True
+        self.selected_download_items = list(self.selected_gallery_items.values())
+        self.selected_download_index = 0
+        self.selected_download_current_filename = None
+        self.download_next_selected_item()
+
+    def download_next_selected_item(self):
+        if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+            self.selected_download_in_progress = False
+            return
+
+        items = getattr(self, "selected_download_items", [])
+        idx = getattr(self, "selected_download_index", 0)
+
+        if idx >= len(items):
+            self.selected_download_in_progress = False
+            self.gallery_status_lbl.configure(text=f"Batch download complete! Downloaded {len(items)} files.")
+            self.clear_gallery_selection()
+            return
+
+        item = items[idx]
+        self.selected_download_index = idx + 1
+        self.selected_download_current_filename = item.get("name")
+
+        self.gallery_status_lbl.configure(text=f"Batch download: downloading {idx+1}/{len(items)}: '{item.get('name')}'...")
+        
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("download_gallery_item", {"uri": item.get("uri")})
+        except Exception as e:
+            print(f"[Gallery] Error requesting selected download: {e}")
+
+        if hasattr(self, "selected_download_timeout_id") and self.selected_download_timeout_id:
+            try:
+                self.after_cancel(self.selected_download_timeout_id)
+            except Exception:
+                pass
+        self.selected_download_timeout_id = self.after(20000, lambda: self.check_selected_download_timeout(idx + 1))
+
+    def check_selected_download_timeout(self, expected_idx):
+        if not getattr(self, "selected_download_in_progress", False):
+            return
+        if getattr(self, "selected_download_index", 0) == expected_idx:
+            self.download_next_selected_item()
 
     def close_gallery_window(self):
         self.entire_sync_in_progress = False
@@ -4535,12 +4765,18 @@ class DeviceLinkApp(ctk.CTk):
     def refresh_gallery(self):
         self.entire_sync_in_progress = False
         self.entire_sync_cancel = True
-        self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+        self.btn_entire_sync.configure(text="Download Entire Gallery", fg_color="#10B981", hover_color="#059669")
         self.entire_sync_progress_lbl.configure(text="")
         self.entire_sync_bar.set(0.0)
 
         self.gallery_offset = 0
         self.gallery_items = []
+        
+        # Clear selection on refresh
+        self.selected_gallery_uris = set()
+        self.selected_gallery_items = {}
+        self.gallery_select_vars = {}
+        self.update_download_selected_btn_state()
         
         for child in self.gallery_grid.winfo_children():
             child.destroy()
@@ -4550,13 +4786,14 @@ class DeviceLinkApp(ctk.CTk):
         try:
             from nexuslink.server.ws_server import send_message_to_all_peers_sync
             sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
-            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            sort_order = "DESC" if self.gallery_sort_order.get() in ["Newest/Largest", "Latest", "Largest"] else "ASC"
+            include_photos = self.gallery_photo_var.get()
             include_videos = self.gallery_video_var.get()
             
             send_message_to_all_peers_sync("query_gallery", {
                 "offset": 0,
                 "limit": self.gallery_limit,
-                "include_images": True,
+                "include_images": include_photos,
                 "include_videos": include_videos,
                 "sort_by": sort_by,
                 "sort_order": sort_order,
@@ -4571,13 +4808,14 @@ class DeviceLinkApp(ctk.CTk):
         try:
             from nexuslink.server.ws_server import send_message_to_all_peers_sync
             sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
-            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            sort_order = "DESC" if self.gallery_sort_order.get() in ["Newest/Largest", "Latest", "Largest"] else "ASC"
+            include_photos = self.gallery_photo_var.get()
             include_videos = self.gallery_video_var.get()
             
             send_message_to_all_peers_sync("query_gallery", {
                 "offset": self.gallery_offset,
                 "limit": self.gallery_limit,
-                "include_images": True,
+                "include_images": include_photos,
                 "include_videos": include_videos,
                 "sort_by": sort_by,
                 "sort_order": sort_order,
@@ -4591,15 +4829,15 @@ class DeviceLinkApp(ctk.CTk):
         if self.entire_sync_in_progress:
             self.entire_sync_cancel = True
             self.entire_sync_in_progress = False
-            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
-            self.gallery_status_lbl.configure(text="Sync cancelled.")
+            self.btn_entire_sync.configure(text="Download Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            self.gallery_status_lbl.configure(text="Download cancelled.")
             self.entire_sync_progress_lbl.configure(text="Cancelled")
             self.entire_sync_bar.set(0.0)
             return
 
         from tkinter import messagebox
         if not messagebox.askyesno(
-            "Sync Entire Gallery",
+            "Download Entire Gallery",
             "This will download the entire gallery (photos & videos) from your phone to your PC.\nThis could take significant time and network usage.\n\nDo you want to proceed?",
             parent=self.gallery_win
         ):
@@ -4612,7 +4850,14 @@ class DeviceLinkApp(ctk.CTk):
         self.entire_sync_cancel = False
         self.entire_sync_index = 0
         self.entire_sync_items_to_download = []
-        self.btn_entire_sync.configure(text="Cancel Sync", fg_color="#EF4444", hover_color="#DC2626")
+        
+        # Clear selection on full download
+        self.selected_gallery_uris = set()
+        self.selected_gallery_items = {}
+        self.gallery_select_vars = {}
+        self.update_download_selected_btn_state()
+
+        self.btn_entire_sync.configure(text="Cancel Download", fg_color="#EF4444", hover_color="#DC2626")
         self.entire_sync_progress_lbl.configure(text="Fetching list...")
         self.entire_sync_bar.set(0.0)
 
@@ -4624,13 +4869,14 @@ class DeviceLinkApp(ctk.CTk):
         try:
             from nexuslink.server.ws_server import send_message_to_all_peers_sync
             sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
-            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            sort_order = "DESC" if self.gallery_sort_order.get() in ["Newest/Largest", "Latest", "Largest"] else "ASC"
+            include_photos = self.gallery_photo_var.get()
             include_videos = self.gallery_video_var.get()
 
             send_message_to_all_peers_sync("query_gallery", {
                 "offset": 0,
                 "limit": 10000,
-                "include_images": True,
+                "include_images": include_photos,
                 "include_videos": include_videos,
                 "sort_by": sort_by,
                 "sort_order": sort_order,
@@ -4638,9 +4884,9 @@ class DeviceLinkApp(ctk.CTk):
             })
             self.gallery_status_lbl.configure(text="Retrieving gallery file list from Android...")
         except Exception as e:
-            self.gallery_status_lbl.configure(text=f"Error starting sync: {e}")
+            self.gallery_status_lbl.configure(text=f"Error starting download: {e}")
             self.entire_sync_in_progress = False
-            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            self.btn_entire_sync.configure(text="Download Entire Gallery", fg_color="#10B981", hover_color="#059669")
 
     def download_next_entire_sync_item(self):
         if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
@@ -4649,9 +4895,9 @@ class DeviceLinkApp(ctk.CTk):
 
         if getattr(self, "entire_sync_cancel", False):
             self.entire_sync_in_progress = False
-            self.gallery_status_lbl.configure(text="Sync cancelled.")
+            self.gallery_status_lbl.configure(text="Download cancelled.")
             self.entire_sync_bar.set(0.0)
-            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            self.btn_entire_sync.configure(text="Download Entire Gallery", fg_color="#10B981", hover_color="#059669")
             return
 
         items = getattr(self, "entire_sync_items_to_download", [])
@@ -4659,10 +4905,10 @@ class DeviceLinkApp(ctk.CTk):
 
         if idx >= len(items):
             self.entire_sync_in_progress = False
-            self.gallery_status_lbl.configure(text=f"Sync complete! Synced {len(items)} files.")
+            self.gallery_status_lbl.configure(text=f"Download complete! Downloaded {len(items)} files.")
             self.entire_sync_progress_lbl.configure(text="Completed!")
             self.entire_sync_bar.set(1.0)
-            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            self.btn_entire_sync.configure(text="Download Entire Gallery", fg_color="#10B981", hover_color="#059669")
             return
 
         item = items[idx]
@@ -4671,7 +4917,7 @@ class DeviceLinkApp(ctk.CTk):
 
         pct = float(idx) / float(len(items))
         self.entire_sync_bar.set(pct)
-        self.entire_sync_progress_lbl.configure(text=f"Syncing: {idx+1}/{len(items)} files...")
+        self.entire_sync_progress_lbl.configure(text=f"Downloading: {idx+1}/{len(items)} files...")
         
         try:
             from nexuslink.server.ws_server import send_message_to_all_peers_sync
@@ -4763,17 +5009,27 @@ class DeviceLinkApp(ctk.CTk):
 
     def render_gallery_items(self, items):
         start_idx = len(self.gallery_items) - len(items)
-        
+        cols = getattr(self, "gallery_cols", 3)
         for idx, item in enumerate(items):
             overall_idx = start_idx + idx
-            row = overall_idx // 4
-            col = overall_idx % 4
+            row = overall_idx // cols
+            col = overall_idx % cols
 
-            # Clean card: transparent, no borders, modern padding
-            card = ctk.CTkFrame(self.gallery_grid, fg_color="transparent", corner_radius=0, border_width=0)
+            uri = item.get("uri")
+            is_selected = uri in self.selected_gallery_uris
+            select_var = ctk.BooleanVar(value=is_selected)
+            self.gallery_select_vars[uri] = select_var
+
+            # Clean card with rounded selection border support
+            card = ctk.CTkFrame(
+                self.gallery_grid, 
+                fg_color="transparent", 
+                corner_radius=8, 
+                border_width=2 if is_selected else 0,
+                border_color="#3B82F6"
+            )
             card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
             
-            uri = item.get("uri")
             self.gallery_cards[uri] = card
 
             # Fitted image label
@@ -4817,6 +5073,23 @@ class DeviceLinkApp(ctk.CTk):
 
             # Bind right-click on the image to show context menu
             lbl_thumb.bind("<Button-3>", lambda e, it=item: self.show_gallery_context_menu(it, e))
+
+            # Overlay a small selection checkbox in the top-left corner
+            chk_select = ctk.CTkCheckBox(
+                lbl_thumb,
+                text="",
+                variable=select_var,
+                width=18,
+                height=18,
+                checkbox_width=18,
+                checkbox_height=18,
+                corner_radius=4,
+                command=lambda it=item, var=select_var: self.on_gallery_item_select(it, var)
+            )
+            chk_select.place(relx=0.05, rely=0.05, anchor="nw")
+
+            # Left-click on thumbnail to toggle selection
+            lbl_thumb.bind("<Button-1>", lambda e, var=select_var, chk=chk_select, it=item: self.toggle_gallery_selection(var, chk, it))
 
             # Overlay a small 3-dots button in the top-right corner of the image
             btn_menu = ctk.CTkButton(

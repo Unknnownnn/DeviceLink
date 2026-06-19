@@ -735,7 +735,7 @@ class ConnectionManager @Inject constructor(
             if (uriStr.isNotBlank()) {
                 addLog("Gallery item download request: $uriStr")
                 try {
-                    fileTransferManagerLazy.get().sendFile(android.net.Uri.parse(uriStr))
+                    fileTransferManagerLazy.get().sendFile(android.net.Uri.parse(uriStr), isGallery = true)
                 } catch (e: Exception) {
                     addLog("Error downloading gallery item: ${e.message}")
                 }
@@ -1959,6 +1959,23 @@ class ConnectionManager @Inject constructor(
         }
     }
 
+    fun notifyDeleteSuccess(uriStr: String) {
+        sendMessage("delete_gallery_response", JSONObject().apply {
+            put("uri", uriStr)
+            put("success", true)
+        })
+        addLog("Successfully deleted gallery item: $uriStr")
+    }
+
+    fun notifyDeleteFailure(uriStr: String, error: String) {
+        sendMessage("delete_gallery_response", JSONObject().apply {
+            put("uri", uriStr)
+            put("success", false)
+            put("error", error)
+        })
+        addLog("Failed to delete gallery item: $uriStr ($error)")
+    }
+
     fun deleteGalleryItem(payload: JSONObject) {
         scope.launch(Dispatchers.IO) {
             val uriStr = payload.optString("uri", "")
@@ -1967,56 +1984,59 @@ class ConnectionManager @Inject constructor(
                 val uri = android.net.Uri.parse(uriStr)
                 val deletedCount = context.contentResolver.delete(uri, null, null)
                 if (deletedCount > 0) {
-                    sendMessage("delete_gallery_response", JSONObject().apply {
-                        put("uri", uriStr)
-                        put("success", true)
-                    })
-                    addLog("Successfully deleted gallery item: $uriStr")
+                    notifyDeleteSuccess(uriStr)
                 } else {
                     val fileDeleted = deleteFileViaPath(uri)
                     if (fileDeleted) {
-                        sendMessage("delete_gallery_response", JSONObject().apply {
-                            put("uri", uriStr)
-                            put("success", true)
-                        })
-                        addLog("Successfully deleted gallery file via path: $uriStr")
+                        notifyDeleteSuccess(uriStr)
                     } else {
-                        sendMessage("delete_gallery_response", JSONObject().apply {
-                            put("uri", uriStr)
-                            put("success", false)
-                            put("error", "Item not found or delete count was 0")
-                        })
+                        notifyDeleteFailure(uriStr, "Item not found or delete count was 0")
                     }
                 }
             } catch (se: SecurityException) {
                 try {
                     val fileDeleted = deleteFileViaPath(android.net.Uri.parse(uriStr))
                     if (fileDeleted) {
-                        sendMessage("delete_gallery_response", JSONObject().apply {
-                            put("uri", uriStr)
-                            put("success", true)
-                        })
-                        addLog("Successfully deleted gallery file via path after SecurityException: $uriStr")
+                        notifyDeleteSuccess(uriStr)
                         return@launch
                     }
                 } catch (e: Exception) {
                     // ignore
                 }
 
-                Log.e(TAG, "SecurityException deleting $uriStr: ${se.message}")
-                sendMessage("delete_gallery_response", JSONObject().apply {
-                    put("uri", uriStr)
-                    put("success", false)
-                    put("error", "permission_denied_or_security_exception")
-                    put("message", se.message)
-                })
+                val uri = android.net.Uri.parse(uriStr)
+                var pendingIntent: android.app.PendingIntent? = null
+
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    try {
+                        pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, listOf(uri))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to create delete request for Android 11+: ${e.message}")
+                    }
+                } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && se is android.app.RecoverableSecurityException) {
+                    pendingIntent = se.userAction.actionIntent
+                }
+
+                if (pendingIntent != null) {
+                    try {
+                        val intent = Intent(context, com.nexuslink.app.services.DeleteConsentActivity::class.java).apply {
+                            putExtra("pending_intent", pendingIntent)
+                            putExtra("uri", uriStr)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+                        }
+                        context.startActivity(intent)
+                        addLog("Starting delete confirmation prompt on phone for: $uriStr")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to start DeleteConsentActivity: ${e.message}")
+                        notifyDeleteFailure(uriStr, "Failed to launch delete consent dialog: ${e.message}")
+                    }
+                } else {
+                    Log.e(TAG, "SecurityException deleting $uriStr: ${se.message}")
+                    notifyDeleteFailure(uriStr, "permission_denied_or_security_exception: ${se.message}")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error deleting $uriStr: ${e.message}")
-                sendMessage("delete_gallery_response", JSONObject().apply {
-                    put("uri", uriStr)
-                    put("success", false)
-                    put("error", e.message ?: "Unknown error")
-                })
+                notifyDeleteFailure(uriStr, e.message ?: "Unknown error")
             }
         }
     }

@@ -29,6 +29,7 @@ async def handle_start(
     file_id = payload.get("file_id")
     file_name = payload.get("file_name")
     file_size = payload.get("file_size", 0)
+    is_gallery = payload.get("is_gallery", False)
 
     if not file_id or not file_name:
         log.error("Invalid file_transfer_start payload.")
@@ -38,6 +39,8 @@ async def handle_start(
     safe_name = os.path.basename(file_name)
     
     downloads_dir = get_downloads_dir()
+    if is_gallery:
+        downloads_dir = downloads_dir / "gallery"
     downloads_dir.mkdir(parents=True, exist_ok=True)
     
     dest_path = downloads_dir / safe_name
