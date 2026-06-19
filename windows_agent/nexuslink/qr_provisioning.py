@@ -1,18 +1,3 @@
-"""
-DeviceLink QR Provisioning
-
-Renders a QR code to the terminal (and optionally a PNG file) containing
-the agent's identity fingerprint and network address.  The Android app
-scans this QR code to initiate the one-time pairing flow.
-
-QR payload JSON:
-    {
-        "v":    1,
-        "fp":   "<sha256-hex of Ed25519 public key>",
-        "host": "<local hostname>",
-        "port": <ws_port>
-    }
-"""
 from __future__ import annotations
 
 import json
@@ -45,10 +30,6 @@ def build_pairing_payload(fingerprint: str, port: int = WS_PORT) -> str:
 
 
 def print_qr_to_console(fingerprint: str, port: int = WS_PORT) -> None:
-    """
-    Render the pairing QR code directly in the terminal using block characters.
-    Works on any terminal that supports Unicode block elements.
-    """
     payload = build_pairing_payload(fingerprint, port)
 
     qr = qrcode.QRCode(
@@ -60,13 +41,11 @@ def print_qr_to_console(fingerprint: str, port: int = WS_PORT) -> None:
     qr.add_data(payload)
     qr.make(fit=True)
 
-    # Print header
     print()
     print("=" * 60)
     print("  DeviceLink — Scan this QR code with the Android app to pair")
     print("=" * 60)
 
-    # Render using the built-in ASCII art method (terminal-friendly)
     f = StringIO()
     qr.print_ascii(out=f, invert=True)
     f.seek(0)
@@ -80,10 +59,7 @@ def print_qr_to_console(fingerprint: str, port: int = WS_PORT) -> None:
 
 
 def save_qr_as_png(fingerprint: str, port: int = WS_PORT) -> str:
-    """
-    Save the pairing QR code as a PNG file in the DeviceLink data directory.
-    Returns the file path as a string.
-    """
+
     payload = build_pairing_payload(fingerprint, port)
     out_path = DEVICELINK_DIR / "pairing_qr.png"
 
