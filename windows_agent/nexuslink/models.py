@@ -1,27 +1,16 @@
-"""
-NexusLink Protocol Message Models
-"""
 from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
 
-
-# ── Message Type Constants ────────────────────────────────────────────────────
-
 class MsgType:
-    # Handshake (plaintext phase)
     HELLO          = "HELLO"
     HELLO_ACK      = "HELLO_ACK"
     HELLO_CONFIRM  = "HELLO_CONFIRM"
-    # Encrypted phase
     PING           = "ping"
     PONG           = "pong"
     ERROR          = "error"
-
-
-# ── Base Message ──────────────────────────────────────────────────────────────
 
 @dataclass
 class NexusMessage:
@@ -49,13 +38,10 @@ class NexusMessage:
         return cls.from_bytes(s.encode("utf-8"))
 
 
-# ── Handshake Messages ────────────────────────────────────────────────────────
-
 @dataclass
 class HelloMessage:
-    """Sent by Android → PC: initiates ECDH key exchange."""
-    x25519_public_key: str    # Base64url-encoded X25519 ephemeral public key
-    ed25519_public_key: str   # Base64url-encoded Ed25519 identity public key
+    x25519_public_key: str    
+    ed25519_public_key: str   
 
     def to_nexus_message(self) -> NexusMessage:
         return NexusMessage(
@@ -69,10 +55,9 @@ class HelloMessage:
 
 @dataclass
 class HelloAckMessage:
-    """Sent by PC → Android: responds with own keys + signature."""
     x25519_public_key: str
     ed25519_public_key: str
-    signature: str            # Ed25519 signature over (android_x25519_pub || pc_x25519_pub)
+    signature: str            
 
     def to_nexus_message(self) -> NexusMessage:
         return NexusMessage(
@@ -87,8 +72,7 @@ class HelloAckMessage:
 
 @dataclass
 class HelloConfirmMessage:
-    """Sent by Android → PC: confirms the handshake with its own signature."""
-    signature: str            # Ed25519 signature over (pc_x25519_pub || android_x25519_pub)
+    signature: str       
 
     def to_nexus_message(self) -> NexusMessage:
         return NexusMessage(
