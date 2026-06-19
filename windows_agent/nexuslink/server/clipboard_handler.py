@@ -1,12 +1,3 @@
-"""
-NexusLink — Clipboard Feature Handler
-
-Handles bidirectional clipboard synchronization.
-1. Receives CLIPBOARD_UPDATE messages from the Android app and writes to Windows clipboard.
-2. Monitors the Windows clipboard for changes using the Win32 AddClipboardFormatListener
-   event hook — fires ONLY when the clipboard actually changes, consuming zero idle CPU.
-   Falls back to polling if the Win32 hook is unavailable.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -24,13 +15,17 @@ from nexuslink.crypto import SessionCipher
 
 log = logging.getLogger("nexuslink.clipboard")
 
-_last_clipboard_text = ""
+_last_clipboard_text  = ""
+_last_clipboard_image = ""   
 
 MSG_TYPE_CLIPBOARD_UPDATE = "CLIPBOARD_UPDATE"
 
 WM_CLIPBOARDUPDATE = 0x031D
 WM_DESTROY        = 0x0002
 WM_CLOSE          = 0x0010
+
+CF_UNICODETEXT = 13
+CF_DIB         = 8   
 
 user32   = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -54,7 +49,6 @@ WNDPROCTYPE = ctypes.WINFUNCTYPE(
 
 def _read_clipboard_text() -> str:
     """Read plain-text from the Windows clipboard via ctypes — no subprocess."""
-    CF_UNICODETEXT = 13
     if not user32.OpenClipboard(None):
         return ""
     try:
@@ -74,12 +68,40 @@ def _read_clipboard_text() -> str:
         user32.CloseClipboard()
 
 
+def _read_clipboard_image() -> str:
+    try:
+        from PIL import ImageGrab
+        import io
+        import base64
+        img = ImageGrab.grabclipboard()
+        if img is None or not hasattr(img, "save"):
+            return ""
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as exc:
+        log.debug("Could not read clipboard image: %s", exc)
+        return ""
+
+
+def _read_clipboard_content() -> tuple[str, str]:
+    text = _read_clipboard_text()
+    if text:
+        return text, ""
+    image_b64 = _read_clipboard_image()
+    return "", image_b64
+
+
 def _write_clipboard_text(text: str) -> None:
-    """Write plain-text to the Windows clipboard via ctypes."""
     pyperclip.copy(text)
 
-
 class _ClipboardListener:
+    """
+    Listens for WM_CLIPBOARDUPDATE on a hidden Win32 message-only window.
+    Pushes True into the asyncio queue whenever the clipboard changes so the
+    async consumer can read and forward the new content.
+    """
+
     def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
         self._queue  = queue
         self._loop   = loop
@@ -98,9 +120,7 @@ class _ClipboardListener:
         """Runs in a dedicated daemon thread — owns the Win32 message pump."""
         def wnd_proc(hwnd, msg, wparam, lparam):
             if msg == WM_CLIPBOARDUPDATE:
-                text = _read_clipboard_text()
-                if text:
-                    self._loop.call_soon_threadsafe(self._queue.put_nowait, text)
+                self._loop.call_soon_threadsafe(self._queue.put_nowait, True)
                 return 0
             elif msg in (WM_DESTROY, WM_CLOSE):
                 user32.PostQuitMessage(0)
@@ -110,8 +130,6 @@ class _ClipboardListener:
         wnd_proc_cb = WNDPROCTYPE(wnd_proc)
         hinstance = kernel32.GetModuleHandleW(None)
         class_name = "DeviceLinkClipWatcher"
-
-        WNDCLASSW = ctypes.create_string_buffer(ctypes.sizeof(ctypes.c_void_p) * 10 + 40)
 
         class WNDCLASS(ctypes.Structure):
             _fields_ = [
@@ -136,7 +154,7 @@ class _ClipboardListener:
             log.warning("ClipboardHook: RegisterClassW failed — falling back to polling")
             return
 
-        HWND_MESSAGE = ctypes.wintypes.HWND(-3) 
+        HWND_MESSAGE = ctypes.wintypes.HWND(-3)
         hwnd = user32.CreateWindowExW(
             0, class_name, "DeviceLinkClipWatcher",
             0, 0, 0, 0, 0,
@@ -165,9 +183,46 @@ class _ClipboardListener:
         log.info("ClipboardHook: Message pump exited cleanly")
 
 
+# ── Shared change handler ─────────────────────────────────────────────────────
+
+async def _handle_clipboard_change(
+    send_message: Callable[[NexusMessage], Awaitable[None]],
+) -> None:
+    """
+    Read the current clipboard (text or image) and forward it to Android if
+    it differs from the last value that was sent.
+    """
+    global _last_clipboard_text, _last_clipboard_image
+
+    text, image_b64 = _read_clipboard_content()
+
+    if text and text != _last_clipboard_text:
+        _last_clipboard_text  = text
+        _last_clipboard_image = ""
+        log.info("Clipboard changed (text) → sending to Android (%d chars)", len(text))
+        await send_message(NexusMessage(
+            type=MSG_TYPE_CLIPBOARD_UPDATE,
+            payload={"text": text}
+        ))
+
+    elif image_b64 and image_b64 != _last_clipboard_image:
+        _last_clipboard_image = image_b64
+        _last_clipboard_text  = ""
+        log.info(
+            "Clipboard changed (image) → sending to Android (%d bytes b64)",
+            len(image_b64),
+        )
+        await send_message(NexusMessage(
+            type=MSG_TYPE_CLIPBOARD_UPDATE,
+            payload={"image": image_b64}
+        ))
+
+
+# ── Main async monitor task ───────────────────────────────────────────────────
+
 async def clipboard_monitor_task(send_message: Callable[[NexusMessage], Awaitable[None]]) -> None:
 
-    global _last_clipboard_text
+    global _last_clipboard_text, _last_clipboard_image
 
     log.info("Starting Windows clipboard monitor (event-driven mode)...")
 
@@ -178,7 +233,7 @@ async def clipboard_monitor_task(send_message: Callable[[NexusMessage], Awaitabl
 
     if sys.platform == "win32":
         loop = asyncio.get_event_loop()
-        clip_queue: asyncio.Queue[str] = asyncio.Queue()
+        clip_queue: asyncio.Queue[bool] = asyncio.Queue()
         listener = _ClipboardListener(clip_queue, loop)
         listener.start()
 
@@ -188,15 +243,10 @@ async def clipboard_monitor_task(send_message: Callable[[NexusMessage], Awaitabl
             log.info("Clipboard event hook active — zero idle CPU usage.")
             try:
                 while True:
-                    text = await clip_queue.get()
-                    if text and text != _last_clipboard_text:
-                        _last_clipboard_text = text
-                        log.info("Clipboard changed (event) → sending to Android (%d chars)", len(text))
-                        update_msg = NexusMessage(
-                            type=MSG_TYPE_CLIPBOARD_UPDATE,
-                            payload={"text": text}
-                        )
-                        await send_message(update_msg)
+                    await clip_queue.get()
+                    # Brief pause so the clipboard owner can finish writing
+                    await asyncio.sleep(0.05)
+                    await _handle_clipboard_change(send_message)
             except asyncio.CancelledError:
                 listener.stop()
                 raise
@@ -210,35 +260,28 @@ async def clipboard_monitor_task(send_message: Callable[[NexusMessage], Awaitabl
     _idle = 0
     while True:
         try:
-            current_text = pyperclip.paste()
-            if current_text and current_text != _last_clipboard_text:
-                _last_clipboard_text = current_text
-                _idle = 0
-                log.info("Clipboard changed (poll) → sending to Android (%d chars)", len(current_text))
-                update_msg = NexusMessage(
-                    type=MSG_TYPE_CLIPBOARD_UPDATE,
-                    payload={"text": current_text}
-                )
-                await send_message(update_msg)
-            else:
-                _idle += 1
+            await _handle_clipboard_change(send_message)
+            _idle = 0
         except Exception as exc:
             log.debug("Clipboard poll error: %s", exc)
+            _idle += 1
 
         await asyncio.sleep(0.5 if _idle < 3 else 2.5)
 
+
+# ── Incoming handler (Android → Windows) ─────────────────────────────────────
 
 async def handle_clipboard_update(
     msg: NexusMessage,
     cipher: SessionCipher,
     websocket,
 ) -> None:
-    """Handle incoming clipboard updates from the Android app."""
+    """Handle incoming clipboard updates from the Android app (text only for now)."""
     global _last_clipboard_text
 
     text = msg.payload.get("text", "")
     if text and text != _last_clipboard_text:
-        log.info("Received clipboard update from Android (%d chars)", len(text))
+        log.info("Received text clipboard update from Android (%d chars)", len(text))
         _last_clipboard_text = text
         try:
             _write_clipboard_text(text)

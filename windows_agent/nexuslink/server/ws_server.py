@@ -219,7 +219,7 @@ def extract_shortcut_icon(target: str, item_type: str = "app", size: int = 64) -
     shell32.SHGetFileInfoW.argtypes = [
         ctypes.c_void_p,
         ctypes.c_uint32,
-        ctypes.c_void_p,  # Use generic void_p to allow passing both SHFILEINFOW pointers
+        ctypes.c_void_p,  
         ctypes.c_uint,
         ctypes.c_uint
     ]

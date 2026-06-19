@@ -45,8 +45,28 @@ async def handle_sync_desktop_deck(
     if app:
         app.after(0, lambda: app.handle_sync_desktop_deck(msg.payload))
 
+async def handle_sync_gallery(
+    msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol
+) -> None:
+    log.info("Received gallery update from phone")
+    from nexuslink.server.handlers import get_app_instance
+    app = get_app_instance()
+    if app:
+        app.after(0, lambda: app.handle_sync_gallery(msg.payload))
+
+async def handle_delete_gallery_response(
+    msg: NexusMessage, cipher: SessionCipher, ws: WebSocketServerProtocol
+) -> None:
+    log.info("Received delete gallery response from phone")
+    from nexuslink.server.handlers import get_app_instance
+    app = get_app_instance()
+    if app:
+        app.after(0, lambda: app.handle_delete_gallery_response(msg.payload))
+
 def register(registry: HandlerRegistry) -> None:
     registry.register("sync_phone_status", handle_sync_phone_status)
     registry.register("sync_notifications", handle_sync_notifications)
     registry.register("sync_sms", handle_sync_sms)
     registry.register("sync_desktop_deck", handle_sync_desktop_deck)
+    registry.register("sync_gallery", handle_sync_gallery)
+    registry.register("delete_gallery_response", handle_delete_gallery_response)

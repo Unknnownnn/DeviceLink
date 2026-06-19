@@ -59,9 +59,14 @@ class MainActivity : ComponentActivity() {
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+            perms.add(android.Manifest.permission.READ_MEDIA_IMAGES)
+            perms.add(android.Manifest.permission.READ_MEDIA_VIDEO)
         }
         if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.S_V2) { // Android 12L and lower
             perms.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.P) { // Android 9 and lower
+            perms.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             perms.add("android.permission.BLUETOOTH_CONNECT")

@@ -38,6 +38,7 @@ sealed class ConnectionState {
 sealed class SessionEvent {
     data class MessageReceived(val type: String, val payload: JSONObject) : SessionEvent()
     data class ClipboardUpdate(val text: String) : SessionEvent()
+    data class ClipboardImageUpdate(val imageB64: String) : SessionEvent()
     data class HandshakeFailed(val reason: String) : SessionEvent()
     data class SessionEstablished(val peerEd25519PubB64: String, val deviceName: String) : SessionEvent()
     object Disconnected : SessionEvent()
@@ -190,8 +191,12 @@ class NexusWebSocketClient(
         val payload = json.optJSONObject("payload") ?: JSONObject()
 
         if (type == "CLIPBOARD_UPDATE") {
-            val text = payload.optString("text", "")
-            scope.launch { events.send(SessionEvent.ClipboardUpdate(text)) }
+            val text  = payload.optString("text",  "")
+            val image = payload.optString("image", "")
+            when {
+                text.isNotBlank()  -> scope.launch { events.send(SessionEvent.ClipboardUpdate(text)) }
+                image.isNotBlank() -> scope.launch { events.send(SessionEvent.ClipboardImageUpdate(image)) }
+            }
         } else {
             Log.d(TAG, "← [$type]")
             scope.launch { events.send(SessionEvent.MessageReceived(type, payload)) }

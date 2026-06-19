@@ -18,23 +18,35 @@ class PasteActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        val text = intent.getStringExtra("CLIPBOARD_TEXT")
-        if (!text.isNullOrBlank()) {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("DeviceLink", text))
-            
-            // Also notify the ConnectionManager so it doesn't bounce it back
-            connectionManager.writeToAndroidClipboard(text)
-            
-            Toast.makeText(this, "Pasted from PC", Toast.LENGTH_SHORT).show()
+
+        val text     = intent.getStringExtra("CLIPBOARD_TEXT")
+        val imageB64 = intent.getStringExtra("CLIPBOARD_IMAGE_B64")
+
+        when {
+            !imageB64.isNullOrBlank() -> {
+                // Write the image (Base64 PNG from PC) to the Android clipboard via FileProvider
+                connectionManager.writeImageToAndroidClipboard(imageB64)
+                Toast.makeText(this, "Image pasted from PC", Toast.LENGTH_SHORT).show()
+                // Cancel the image notification
+                val notificationManager =
+                    getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                notificationManager.cancel(3)
+            }
+            !text.isNullOrBlank() -> {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("DeviceLink", text))
+
+                // Also notify the ConnectionManager so it doesn't bounce it back
+                connectionManager.writeToAndroidClipboard(text)
+
+                Toast.makeText(this, "Pasted from PC", Toast.LENGTH_SHORT).show()
+                // Cancel the text notification
+                val notificationManager =
+                    getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                notificationManager.cancel(2)
+            }
         }
-        
-        // Manually cancel the notification since tapping action buttons doesn't auto-cancel it
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        notificationManager.cancel(2)
-        
-        // Immediately finish the transparent activity
+
         finish()
     }
 }

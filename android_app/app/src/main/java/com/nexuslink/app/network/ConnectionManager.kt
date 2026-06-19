@@ -34,6 +34,8 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.provider.MediaStore
+import android.content.ContentUris
 
 private const val TAG = "ConnectionManager"
 
@@ -54,6 +56,7 @@ class ConnectionManager @Inject constructor(
     private val identity: IdentityManager,
     private val peerStore: PeerStore,
     private val discoveryManager: NsdDiscoveryManager,
+    private val fileTransferManagerLazy: dagger.Lazy<FileTransferManager>
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
 
@@ -66,6 +69,10 @@ class ConnectionManager @Inject constructor(
     // Special flow to trigger notifications from the service
     private val _clipboardUpdates = MutableSharedFlow<String>()
     val clipboardUpdates: SharedFlow<String> = _clipboardUpdates
+
+    // Flow for image clipboard received from PC
+    private val _clipboardImageUpdates = MutableSharedFlow<String>()
+    val clipboardImageUpdates: SharedFlow<String> = _clipboardImageUpdates
 
     private val _fileEvents = MutableSharedFlow<SessionEvent.MessageReceived>()
     val fileEvents: SharedFlow<SessionEvent.MessageReceived> = _fileEvents
@@ -390,6 +397,13 @@ class ConnectionManager @Inject constructor(
                                     _clipboardUpdates.emit(text)
                                 }
                             }
+                            is SessionEvent.ClipboardImageUpdate -> {
+                                val imageB64 = event.imageB64
+                                if (imageB64.isNotBlank()) {
+                                    addLog("Received image clipboard from PC")
+                                    _clipboardImageUpdates.emit(imageB64)
+                                }
+                            }
                             else -> {}
                         }
                     }
@@ -532,6 +546,13 @@ class ConnectionManager @Inject constructor(
                                     _uiState.update { it.copy(lastClipboardSync = text) }
                                     addLog("Received clipboard sync from PC")
                                     _clipboardUpdates.emit(text)
+                                }
+                            }
+                            is SessionEvent.ClipboardImageUpdate -> {
+                                val imageB64 = event.imageB64
+                                if (imageB64.isNotBlank()) {
+                                    addLog("Received image clipboard from PC")
+                                    _clipboardImageUpdates.emit(imageB64)
                                 }
                             }
                             else -> {}
@@ -697,6 +718,20 @@ class ConnectionManager @Inject constructor(
             val action = event.payload.optString("action", "")
             Log.d(TAG, "android_action from PC: $action")
             handleAndroidAction(action, event.payload)
+        } else if (event.type == "query_gallery") {
+            syncGallery(event.payload)
+        } else if (event.type == "download_gallery_item") {
+            val uriStr = event.payload.optString("uri", "")
+            if (uriStr.isNotBlank()) {
+                addLog("Gallery item download request: $uriStr")
+                try {
+                    fileTransferManagerLazy.get().sendFile(android.net.Uri.parse(uriStr))
+                } catch (e: Exception) {
+                    addLog("Error downloading gallery item: ${e.message}")
+                }
+            }
+        } else if (event.type == "delete_gallery_item") {
+            deleteGalleryItem(event.payload)
         } else if (event.type == "pc_log") {
             val pcLog = event.payload.optString("log", "")
             if (pcLog.isNotBlank()) {
@@ -1232,6 +1267,28 @@ class ConnectionManager @Inject constructor(
         _uiState.update { it.copy(lastClipboardSync = text) }
     }
 
+    /**
+     * Decode a Base64 PNG from the PC, save it to the app cache directory, then
+     * put a content URI on the Android clipboard so any app can paste the image.
+     */
+    fun writeImageToAndroidClipboard(imageB64: String) {
+        try {
+            val bytes = android.util.Base64.decode(imageB64, android.util.Base64.DEFAULT)
+            val cacheFile = java.io.File(context.cacheDir, "clipboard_image.png")
+            cacheFile.writeBytes(bytes)
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                cacheFile
+            )
+            val clip = ClipData.newUri(context.contentResolver, "DeviceLink Image", uri)
+            clipboardManager.setPrimaryClip(clip)
+            Log.i(TAG, "Image written to Android clipboard via FileProvider URI")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write image to clipboard: ${e.message}")
+        }
+    }
+
     suspend fun emitToast(message: String) {
         _toastEvents.emit(message)
     }
@@ -1672,6 +1729,306 @@ class ConnectionManager @Inject constructor(
         } catch (e: Exception) {
             addLog("Error opening calendar: ${e.message}")
         }
+    }
+
+    private fun hasGalleryPermission(includeImages: Boolean, includeVideos: Boolean): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= 33) {
+            var granted = true
+            if (includeImages) {
+                granted = granted && androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.READ_MEDIA_IMAGES
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+            if (includeVideos) {
+                granted = granted && androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.READ_MEDIA_VIDEO
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+            granted
+        } else {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun syncGallery(payload: JSONObject) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val offset = payload.optInt("offset", 0)
+                val limit = payload.optInt("limit", 20)
+                val includeImages = payload.optBoolean("include_images", true)
+                val includeVideos = payload.optBoolean("include_videos", false)
+                val sortBy = payload.optString("sort_by", "date")
+                val sortOrder = payload.optString("sort_order", "DESC")
+                val excludeThumbnails = payload.optBoolean("exclude_thumbnails", false)
+
+                if (!hasGalleryPermission(includeImages, includeVideos)) {
+                    sendMessage("sync_gallery", JSONObject().apply {
+                        put("error", "permission_denied")
+                    })
+                    return@launch
+                }
+
+                val items = queryGalleryItems(offset, limit, includeImages, includeVideos, sortBy, sortOrder, excludeThumbnails)
+                sendMessage("sync_gallery", JSONObject().apply {
+                    put("items", items)
+                    put("offset", offset)
+                    put("limit", limit)
+                    put("include_images", includeImages)
+                    put("include_videos", includeVideos)
+                    put("sort_by", sortBy)
+                    put("sort_order", sortOrder)
+                    put("exclude_thumbnails", excludeThumbnails)
+                })
+                addLog("Synced ${items.length()} gallery items to PC (offset: $offset).")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error syncing gallery: ${e.message}")
+                sendMessage("sync_gallery", JSONObject().apply {
+                    put("error", e.message ?: "Unknown error")
+                })
+            }
+        }
+    }
+
+    private fun queryGalleryItems(
+        offset: Int,
+        limit: Int,
+        includeImages: Boolean,
+        includeVideos: Boolean,
+        sortBy: String,
+        sortOrder: String,
+        excludeThumbnails: Boolean
+    ): org.json.JSONArray {
+        val itemsArray = org.json.JSONArray()
+        if (!includeImages && !includeVideos) return itemsArray
+
+        val uri = when {
+            includeImages && includeVideos -> MediaStore.Files.getContentUri("external")
+            includeImages -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            includeVideos -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Files.getContentUri("external")
+        }
+
+        val selection = if (includeImages && includeVideos) {
+            "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO}"
+        } else {
+            null
+        }
+
+        val projection = mutableListOf(
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.DISPLAY_NAME,
+            MediaStore.Files.FileColumns.SIZE,
+            MediaStore.Files.FileColumns.DATE_MODIFIED
+        )
+        if (includeImages && includeVideos) {
+            projection.add(MediaStore.Files.FileColumns.MEDIA_TYPE)
+        }
+        if (includeVideos && android.os.Build.VERSION.SDK_INT >= 29) {
+            projection.add(MediaStore.Video.VideoColumns.DURATION)
+        }
+
+        val sortColumn = if (sortBy == "size") {
+            MediaStore.Files.FileColumns.SIZE
+        } else {
+            MediaStore.Files.FileColumns.DATE_MODIFIED
+        }
+        val sortOrderStr = if (sortOrder == "ASC") "ASC" else "DESC"
+
+        val queryArgs = android.os.Bundle().apply {
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+            putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
+            putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(sortColumn))
+            putInt(
+                android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION,
+                if (sortOrderStr == "ASC") android.content.ContentResolver.QUERY_SORT_DIRECTION_ASCENDING
+                else android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING
+            )
+            if (selection != null) {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+            }
+        }
+
+        context.contentResolver.query(
+            uri,
+            projection.toTypedArray(),
+            queryArgs,
+            null
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+            val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+            val dateIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+            val typeIndex = if (includeImages && includeVideos) cursor.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE) else -1
+            val durationIndex = if (includeVideos && android.os.Build.VERSION.SDK_INT >= 29) cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) else -1
+
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idIndex)
+                val name = cursor.getString(nameIndex) ?: "Unknown"
+                val size = cursor.getLong(sizeIndex)
+                val date = cursor.getLong(dateIndex) * 1000L
+
+                var mediaType = "image"
+                if (includeImages && includeVideos && typeIndex != -1) {
+                    val t = cursor.getInt(typeIndex)
+                    if (t == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO) {
+                        mediaType = "video"
+                    }
+                } else if (includeVideos && !includeImages) {
+                    mediaType = "video"
+                }
+
+                val itemUri = if (mediaType == "video") {
+                    android.content.ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                } else {
+                    android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                }
+
+                var duration = 0L
+                if (mediaType == "video" && durationIndex != -1) {
+                    duration = cursor.getLong(durationIndex)
+                }
+
+                val thumbnailBase64 = if (excludeThumbnails) "" else getThumbnailBase64(itemUri, mediaType == "video")
+
+                val itemObj = JSONObject().apply {
+                    put("id", id.toString())
+                    put("type", mediaType)
+                    put("name", name)
+                    put("size", size)
+                    put("date", date)
+                    put("uri", itemUri.toString())
+                    put("thumbnail", thumbnailBase64)
+                    if (mediaType == "video") {
+                        put("duration", duration)
+                    }
+                }
+                itemsArray.put(itemObj)
+            }
+        }
+
+        return itemsArray
+    }
+
+    private fun getThumbnailBase64(uri: android.net.Uri, isVideo: Boolean): String {
+        try {
+            val bitmap: Bitmap = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                context.contentResolver.loadThumbnail(uri, android.util.Size(384, 384), null)
+            } else {
+                val id = android.content.ContentUris.parseId(uri)
+                if (isVideo) {
+                    @Suppress("DEPRECATION")
+                    MediaStore.Video.Thumbnails.getThumbnail(
+                        context.contentResolver,
+                        id,
+                        MediaStore.Video.Thumbnails.MINI_KIND,
+                        null
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaStore.Images.Thumbnails.getThumbnail(
+                        context.contentResolver,
+                        id,
+                        MediaStore.Images.Thumbnails.MINI_KIND,
+                        null
+                    )
+                }
+            } ?: return ""
+
+            val outputStream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 75, outputStream)
+            val bytes = outputStream.toByteArray()
+            return Base64.encodeToString(bytes, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load thumbnail for $uri: ${e.message}")
+            return ""
+        }
+    }
+
+    fun deleteGalleryItem(payload: JSONObject) {
+        scope.launch(Dispatchers.IO) {
+            val uriStr = payload.optString("uri", "")
+            if (uriStr.isBlank()) return@launch
+            try {
+                val uri = android.net.Uri.parse(uriStr)
+                val deletedCount = context.contentResolver.delete(uri, null, null)
+                if (deletedCount > 0) {
+                    sendMessage("delete_gallery_response", JSONObject().apply {
+                        put("uri", uriStr)
+                        put("success", true)
+                    })
+                    addLog("Successfully deleted gallery item: $uriStr")
+                } else {
+                    val fileDeleted = deleteFileViaPath(uri)
+                    if (fileDeleted) {
+                        sendMessage("delete_gallery_response", JSONObject().apply {
+                            put("uri", uriStr)
+                            put("success", true)
+                        })
+                        addLog("Successfully deleted gallery file via path: $uriStr")
+                    } else {
+                        sendMessage("delete_gallery_response", JSONObject().apply {
+                            put("uri", uriStr)
+                            put("success", false)
+                            put("error", "Item not found or delete count was 0")
+                        })
+                    }
+                }
+            } catch (se: SecurityException) {
+                try {
+                    val fileDeleted = deleteFileViaPath(android.net.Uri.parse(uriStr))
+                    if (fileDeleted) {
+                        sendMessage("delete_gallery_response", JSONObject().apply {
+                            put("uri", uriStr)
+                            put("success", true)
+                        })
+                        addLog("Successfully deleted gallery file via path after SecurityException: $uriStr")
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    // ignore
+                }
+
+                Log.e(TAG, "SecurityException deleting $uriStr: ${se.message}")
+                sendMessage("delete_gallery_response", JSONObject().apply {
+                    put("uri", uriStr)
+                    put("success", false)
+                    put("error", "permission_denied_or_security_exception")
+                    put("message", se.message)
+                })
+            } catch (e: Exception) {
+                Log.e(TAG, "Error deleting $uriStr: ${e.message}")
+                sendMessage("delete_gallery_response", JSONObject().apply {
+                    put("uri", uriStr)
+                    put("success", false)
+                    put("error", e.message ?: "Unknown error")
+                })
+            }
+        }
+    }
+
+    private fun deleteFileViaPath(uri: android.net.Uri): Boolean {
+        var path: String? = null
+        val proj = arrayOf(MediaStore.MediaColumns.DATA)
+        context.contentResolver.query(uri, proj, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val colIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                if (colIdx >= 0) {
+                    path = cursor.getString(colIdx)
+                }
+            }
+        }
+        if (!path.isNullOrBlank()) {
+            val file = java.io.File(path)
+            if (file.exists()) {
+                return file.delete()
+            }
+        }
+        return false
     }
 }
 

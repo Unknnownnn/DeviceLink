@@ -70,7 +70,7 @@ if getattr(sys, 'frozen', False):
             except Exception:
                 time.sleep(1)
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 GITHUB_REPO = "Unknnownnn/DeviceLink"
 
 def is_newer_version(current: str, latest: str) -> bool:
@@ -135,6 +135,15 @@ def create_tray_image():
     dc = ImageDraw.Draw(image)
     dc.ellipse((2, 2, 62, 62), fill=(255, 255, 255))
     return image
+
+
+def format_file_size(bytes_size):
+    if bytes_size < 1024:
+        return f"{bytes_size} B"
+    elif bytes_size < 1024 * 1024:
+        return f"{bytes_size / 1024:.1f} KB"
+    else:
+        return f"{bytes_size / (1024 * 1024):.1f} MB"
 
 
 def set_file_progress(filename, bytes_sent, total_bytes, direction="send"):
@@ -1514,11 +1523,13 @@ class DeviceLinkApp(ctk.CTk):
                     "Unreliable Connection Warning",
                     "You are currently connected via STUN UDP Hole Punching.\n\n"
                     "File transfers over UDP are unreliable. Packets may be dropped, "
-                    "and large files may not be sent or received correctly."
+                    "and large files may not be sent or received correctly.",
+                    parent=self
                 )
                 self.has_shown_udp_file_warning = True
 
         filepath = ctk.filedialog.askopenfilename(
+            parent=self,
             title="Select File to Send to Device"
         )
         if filepath and os.path.exists(filepath):
@@ -1608,6 +1619,17 @@ class DeviceLinkApp(ctk.CTk):
                     self.progress_label.configure(text=f"Received '{filename}' successfully!")
                     self.progress_bar.set(1.0)
                     self.open_folder_btn.pack(anchor="w", padx=10, pady=(5, 5))
+                    
+                    # Gallery entire sync integration hook
+                    if hasattr(self, "gallery_win") and self.gallery_win and getattr(self, "entire_sync_in_progress", False):
+                        if filename == getattr(self, "entire_sync_current_filename", None):
+                            if hasattr(self, "entire_sync_timeout_id") and self.entire_sync_timeout_id:
+                                try:
+                                    self.after_cancel(self.entire_sync_timeout_id)
+                                except Exception:
+                                    pass
+                                self.entire_sync_timeout_id = None
+                            self.after(500, self.download_next_entire_sync_item)
                     # Hide the progress frame after 8 seconds to give time to click Open Folder
                     if hasattr(self, "_hide_progress_timer") and getattr(self, "_hide_progress_timer", None):
                         try:
@@ -2454,6 +2476,7 @@ class DeviceLinkApp(ctk.CTk):
 
     def browse_exe(self, entry_widget):
         filepath = ctk.filedialog.askopenfilename(
+            parent=entry_widget.winfo_toplevel(),
             title="Select Executable",
             filetypes=[("Executables", "*.exe"), ("All Files", "*.*")]
         )
@@ -2606,6 +2629,7 @@ class DeviceLinkApp(ctk.CTk):
             from tkinter import filedialog
             import base64
             file_path = filedialog.askopenfilename(
+                parent=edit_win,
                 title="Select Custom Icon Image",
                 filetypes=[
                     ("Image files", "*.png *.jpg *.jpeg *.ico *.gif *.bmp"),
@@ -4189,17 +4213,25 @@ class DeviceLinkApp(ctk.CTk):
         )
         self.notif_status_lbl.pack(pady=30)
 
-        # Bottom row for Messages button
+        # Bottom row for Messages and Gallery buttons
         self.bottom_row = ctk.CTkFrame(status_panel, fg_color="transparent")
         self.bottom_row.pack(fill="x", padx=20, pady=(5, 15))
 
         self.open_messages_btn = ctk.CTkButton(
             self.bottom_row,
-            text="💬 Open Phone Messages (SMS)",
+            text="💬 Messages (SMS)",
             height=36,
             command=self.open_messages_window
         )
-        self.open_messages_btn.pack(fill="x")
+        self.open_messages_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        self.open_gallery_btn = ctk.CTkButton(
+            self.bottom_row,
+            text="🖼️ Photo Gallery",
+            height=36,
+            command=self.open_gallery_window
+        )
+        self.open_gallery_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
 
     def generate_placeholder_wallpaper(self):
         img = Image.new("RGBA", (244, 420), "#0F172A")
@@ -4339,6 +4371,558 @@ class DeviceLinkApp(ctk.CTk):
         if hasattr(self, "messages_win") and self.messages_win:
             self.messages_win.destroy()
             self.messages_win = None
+
+    def open_gallery_window(self):
+        if hasattr(self, "gallery_win") and self.gallery_win and self.gallery_win.winfo_exists():
+            self.gallery_win.lift()
+            self.gallery_win.focus()
+            return
+
+        self.gallery_win = ctk.CTkToplevel(self)
+        self.gallery_win.title("Android Photo & Video Gallery")
+        self.gallery_win.geometry("850x650")
+        self.gallery_win.attributes("-topmost", True)
+        self.gallery_win.transient(self)
+
+        # Main Layout: Left Sidebar for controls, Right Area for Grid
+        self.gallery_sidebar = ctk.CTkFrame(self.gallery_win, width=220, fg_color="#0F172A", corner_radius=0)
+        self.gallery_sidebar.pack(side="left", fill="y")
+        self.gallery_sidebar.pack_propagate(False)
+
+        # Options Title
+        ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="Gallery Control",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#F8FAFC"
+        ).pack(anchor="w", padx=20, pady=(20, 15))
+
+        # Checkbox for Videos
+        self.gallery_video_var = ctk.BooleanVar(value=False)
+        self.chk_videos = ctk.CTkCheckBox(
+            self.gallery_sidebar,
+            text="Include Videos",
+            variable=self.gallery_video_var,
+            font=ctk.CTkFont(size=12),
+            text_color="#F8FAFC"
+        )
+        self.chk_videos.pack(anchor="w", padx=20, pady=10)
+
+        # Sort By Dropdown
+        ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="Sort By:",
+            font=ctk.CTkFont(size=12, weight="normal"),
+            text_color="#94A3B8"
+        ).pack(anchor="w", padx=20, pady=(10, 2))
+
+        self.gallery_sort_by = ctk.StringVar(value="Date")
+        self.cmb_sort_by = ctk.CTkComboBox(
+            self.gallery_sidebar,
+            values=["Date", "Size"],
+            variable=self.gallery_sort_by,
+            font=ctk.CTkFont(size=12)
+        )
+        self.cmb_sort_by.pack(anchor="w", padx=20, pady=5)
+
+        # Sort Order Dropdown
+        ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="Sort Order:",
+            font=ctk.CTkFont(size=12, weight="normal"),
+            text_color="#94A3B8"
+        ).pack(anchor="w", padx=20, pady=(10, 2))
+
+        self.gallery_sort_order = ctk.StringVar(value="Newest/Largest")
+        self.cmb_sort_order = ctk.CTkComboBox(
+            self.gallery_sidebar,
+            values=["Newest/Largest", "Oldest/Smallest"],
+            variable=self.gallery_sort_order,
+            font=ctk.CTkFont(size=12)
+        )
+        self.cmb_sort_order.pack(anchor="w", padx=20, pady=5)
+
+        # Refresh / Sync Button
+        self.btn_refresh_gallery = ctk.CTkButton(
+            self.gallery_sidebar,
+            text="Refresh / Load Recent",
+            height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.refresh_gallery
+        )
+        self.btn_refresh_gallery.pack(fill="x", padx=20, pady=(25, 10))
+
+        # Sync Entire Gallery Button
+        self.btn_entire_sync = ctk.CTkButton(
+            self.gallery_sidebar,
+            text="Sync Entire Gallery",
+            height=32,
+            fg_color="#10B981",
+            hover_color="#059669",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.toggle_entire_gallery_sync
+        )
+        self.btn_entire_sync.pack(fill="x", padx=20, pady=10)
+
+        # Progress elements for entire sync
+        self.entire_sync_progress_lbl = ctk.CTkLabel(
+            self.gallery_sidebar,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="#94A3B8"
+        )
+        self.entire_sync_progress_lbl.pack(anchor="w", padx=20, pady=(10, 2))
+
+        self.entire_sync_bar = ctk.CTkProgressBar(
+            self.gallery_sidebar,
+            height=6
+        )
+        self.entire_sync_bar.pack(fill="x", padx=20, pady=5)
+        self.entire_sync_bar.set(0.0)
+
+        # Right Main Panel
+        self.gallery_main_panel = ctk.CTkFrame(self.gallery_win, fg_color="transparent")
+        self.gallery_main_panel.pack(side="right", fill="both", expand=True)
+
+        # Scrollable container for photos
+        self.gallery_scroll = ctk.CTkScrollableFrame(self.gallery_main_panel)
+        self.gallery_scroll.pack(fill="both", expand=True, padx=15, pady=(15, 5))
+
+        # Grid container inside the scrollable container
+        self.gallery_grid = ctk.CTkFrame(self.gallery_scroll, fg_color="transparent")
+        self.gallery_grid.pack(fill="both", expand=True)
+        for i in range(4):
+            self.gallery_grid.columnconfigure(i, weight=1, minsize=190)
+
+        # Load More Button
+        self.gallery_load_more_btn = ctk.CTkButton(
+            self.gallery_scroll,
+            text="Load Next 20 Items",
+            height=28,
+            command=self.load_more_gallery
+        )
+        self.gallery_load_more_btn.pack(pady=15)
+        self.gallery_load_more_btn.pack_forget()
+
+        # Bottom Status Bar in Right Panel
+        self.gallery_status_lbl = ctk.CTkLabel(
+            self.gallery_main_panel,
+            text="Click 'Refresh / Load Recent' to load pictures from phone",
+            font=ctk.CTkFont(size=12),
+            text_color="#94A3B8"
+        )
+        self.gallery_status_lbl.pack(side="bottom", anchor="w", padx=20, pady=10)
+
+        # State management
+        self.gallery_items = []
+        self.gallery_offset = 0
+        self.gallery_limit = 20
+        self.gallery_cards = {}
+        self.entire_sync_in_progress = False
+        self.entire_sync_items_to_download = []
+        self.entire_sync_index = 0
+        self.entire_sync_cancel = False
+        self.entire_sync_current_filename = None
+
+        self.gallery_win.protocol("WM_DELETE_WINDOW", self.close_gallery_window)
+
+    def close_gallery_window(self):
+        self.entire_sync_in_progress = False
+        if hasattr(self, "gallery_win") and self.gallery_win:
+            self.gallery_win.destroy()
+            self.gallery_win = None
+
+    def refresh_gallery(self):
+        self.entire_sync_in_progress = False
+        self.entire_sync_cancel = True
+        self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+        self.entire_sync_progress_lbl.configure(text="")
+        self.entire_sync_bar.set(0.0)
+
+        self.gallery_offset = 0
+        self.gallery_items = []
+        
+        for child in self.gallery_grid.winfo_children():
+            child.destroy()
+        self.gallery_cards = {}
+        self.gallery_load_more_btn.pack_forget()
+
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
+            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            include_videos = self.gallery_video_var.get()
+            
+            send_message_to_all_peers_sync("query_gallery", {
+                "offset": 0,
+                "limit": self.gallery_limit,
+                "include_images": True,
+                "include_videos": include_videos,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "exclude_thumbnails": False
+            })
+            self.gallery_status_lbl.configure(text="Requesting recent photos/videos from Android...")
+        except Exception as e:
+            self.gallery_status_lbl.configure(text=f"Error requesting gallery: {e}")
+
+    def load_more_gallery(self):
+        self.gallery_offset += self.gallery_limit
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
+            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            include_videos = self.gallery_video_var.get()
+            
+            send_message_to_all_peers_sync("query_gallery", {
+                "offset": self.gallery_offset,
+                "limit": self.gallery_limit,
+                "include_images": True,
+                "include_videos": include_videos,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "exclude_thumbnails": False
+            })
+            self.gallery_status_lbl.configure(text=f"Requesting more photos (offset {self.gallery_offset})...")
+        except Exception as e:
+            self.gallery_status_lbl.configure(text=f"Error requesting more items: {e}")
+
+    def toggle_entire_gallery_sync(self):
+        if self.entire_sync_in_progress:
+            self.entire_sync_cancel = True
+            self.entire_sync_in_progress = False
+            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            self.gallery_status_lbl.configure(text="Sync cancelled.")
+            self.entire_sync_progress_lbl.configure(text="Cancelled")
+            self.entire_sync_bar.set(0.0)
+            return
+
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+            "Sync Entire Gallery",
+            "This will download the entire gallery (photos & videos) from your phone to your PC.\nThis could take significant time and network usage.\n\nDo you want to proceed?",
+            parent=self.gallery_win
+        ):
+            return
+
+        if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+            return
+
+        self.entire_sync_in_progress = True
+        self.entire_sync_cancel = False
+        self.entire_sync_index = 0
+        self.entire_sync_items_to_download = []
+        self.btn_entire_sync.configure(text="Cancel Sync", fg_color="#EF4444", hover_color="#DC2626")
+        self.entire_sync_progress_lbl.configure(text="Fetching list...")
+        self.entire_sync_bar.set(0.0)
+
+        for child in self.gallery_grid.winfo_children():
+            child.destroy()
+        self.gallery_cards = {}
+        self.gallery_load_more_btn.pack_forget()
+
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            sort_by = "date" if self.gallery_sort_by.get() == "Date" else "size"
+            sort_order = "DESC" if self.gallery_sort_order.get() == "Newest/Largest" else "ASC"
+            include_videos = self.gallery_video_var.get()
+
+            send_message_to_all_peers_sync("query_gallery", {
+                "offset": 0,
+                "limit": 10000,
+                "include_images": True,
+                "include_videos": include_videos,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "exclude_thumbnails": True
+            })
+            self.gallery_status_lbl.configure(text="Retrieving gallery file list from Android...")
+        except Exception as e:
+            self.gallery_status_lbl.configure(text=f"Error starting sync: {e}")
+            self.entire_sync_in_progress = False
+            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+
+    def download_next_entire_sync_item(self):
+        if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+            self.entire_sync_in_progress = False
+            return
+
+        if getattr(self, "entire_sync_cancel", False):
+            self.entire_sync_in_progress = False
+            self.gallery_status_lbl.configure(text="Sync cancelled.")
+            self.entire_sync_bar.set(0.0)
+            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            return
+
+        items = getattr(self, "entire_sync_items_to_download", [])
+        idx = getattr(self, "entire_sync_index", 0)
+
+        if idx >= len(items):
+            self.entire_sync_in_progress = False
+            self.gallery_status_lbl.configure(text=f"Sync complete! Synced {len(items)} files.")
+            self.entire_sync_progress_lbl.configure(text="Completed!")
+            self.entire_sync_bar.set(1.0)
+            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            return
+
+        item = items[idx]
+        self.entire_sync_index = idx + 1
+        self.entire_sync_current_filename = item.get("name")
+
+        pct = float(idx) / float(len(items))
+        self.entire_sync_bar.set(pct)
+        self.entire_sync_progress_lbl.configure(text=f"Syncing: {idx+1}/{len(items)} files...")
+        
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("download_gallery_item", {"uri": item.get("uri")})
+            self.gallery_status_lbl.configure(text=f"Downloading {item.get('name')}...")
+        except Exception as e:
+            print(f"[Gallery] Error requesting full sync download: {e}")
+
+        # Schedule timeout check in case of failure/disconnection (20 seconds)
+        if hasattr(self, "entire_sync_timeout_id") and self.entire_sync_timeout_id:
+            try:
+                self.after_cancel(self.entire_sync_timeout_id)
+            except Exception:
+                pass
+        self.entire_sync_timeout_id = self.after(20000, lambda: self.check_entire_sync_timeout(idx + 1))
+
+    def check_entire_sync_timeout(self, expected_idx):
+        if not getattr(self, "entire_sync_in_progress", False):
+            return
+        if getattr(self, "entire_sync_index", 0) == expected_idx:
+            print(f"[Gallery] Download timeout for item {expected_idx}. Skipping to next...")
+            self.download_next_entire_sync_item()
+
+    def handle_sync_gallery(self, payload):
+        if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+            return
+
+        error = payload.get("error")
+        if error:
+            self.entire_sync_in_progress = False
+            self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+            
+            for child in self.gallery_grid.winfo_children():
+                child.destroy()
+            self.gallery_cards = {}
+            self.gallery_load_more_btn.pack_forget()
+
+            if error == "permission_denied":
+                msg = "Gallery Access Restricted!\nPlease grant Photo/Storage permissions on your Android device."
+                lbl = ctk.CTkLabel(self.gallery_grid, text=msg, text_color="#EF4444", font=ctk.CTkFont(size=13, weight="bold"))
+                lbl.pack(pady=40)
+            else:
+                lbl = ctk.CTkLabel(self.gallery_grid, text=f"Error: {error}", text_color="#EF4444")
+                lbl.pack(pady=40)
+            self.gallery_status_lbl.configure(text="Failed to retrieve gallery.")
+            return
+
+        is_exclude_thumb = payload.get("exclude_thumbnails", False)
+        items = payload.get("items", [])
+
+        if is_exclude_thumb:
+            self.entire_sync_items_to_download = items
+            self.entire_sync_index = 0
+            self.entire_sync_cancel = False
+            
+            if not items:
+                self.entire_sync_in_progress = False
+                self.btn_entire_sync.configure(text="Sync Entire Gallery", fg_color="#10B981", hover_color="#059669")
+                self.gallery_status_lbl.configure(text="Sync complete (no items found on phone).")
+                self.entire_sync_progress_lbl.configure(text="No items found")
+                self.entire_sync_bar.set(1.0)
+                return
+
+            self.gallery_status_lbl.configure(text=f"Found {len(items)} files to sync.")
+            self.download_next_entire_sync_item()
+            return
+
+        self.gallery_items.extend(items)
+        self.render_gallery_items(items)
+
+        total_loaded = len(self.gallery_items)
+        self.gallery_status_lbl.configure(text=f"Loaded {total_loaded} gallery items.")
+
+        limit = payload.get("limit", 20)
+        if len(items) >= limit:
+            self.gallery_load_more_btn.pack(pady=15)
+        else:
+            self.gallery_load_more_btn.pack_forget()
+
+    def show_gallery_context_menu(self, item, event=None):
+        import tkinter as tk
+        menu = tk.Menu(self.gallery_win, tearoff=0, bg="#0F172A", fg="#F8FAFC", activebackground="#1E293B", activeforeground="#F8FAFC", bd=0)
+        menu.add_command(label="⬇️ Download to PC", command=lambda: self.download_gallery_item(item))
+        menu.add_command(label="🗑️ Delete from Phone", command=lambda: self.delete_gallery_item(item))
+        if event:
+            menu.post(event.x_root, event.y_root)
+        else:
+            menu.post(self.gallery_win.winfo_pointerx(), self.gallery_win.winfo_pointery())
+
+    def render_gallery_items(self, items):
+        start_idx = len(self.gallery_items) - len(items)
+        
+        for idx, item in enumerate(items):
+            overall_idx = start_idx + idx
+            row = overall_idx // 4
+            col = overall_idx % 4
+
+            # Clean card: transparent, no borders, modern padding
+            card = ctk.CTkFrame(self.gallery_grid, fg_color="transparent", corner_radius=0, border_width=0)
+            card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+            
+            uri = item.get("uri")
+            self.gallery_cards[uri] = card
+
+            # Fitted image label
+            b64_thumb = item.get("thumbnail", "")
+            img_displayed = False
+            
+            lbl_thumb = None
+            if b64_thumb:
+                try:
+                    import io
+                    import base64
+                    from PIL import Image, ImageOps
+                    img_bytes = base64.b64decode(b64_thumb)
+                    pil_img = Image.open(io.BytesIO(img_bytes))
+                    
+                    # Fit to size without stretching (crop cover)
+                    fitted_img = ImageOps.fit(pil_img, (180, 180), Image.Resampling.LANCZOS)
+                    
+                    ctk_img = ctk.CTkImage(light_image=fitted_img, dark_image=fitted_img, size=(180, 180))
+                    
+                    lbl_thumb = ctk.CTkLabel(card, image=ctk_img, text="", corner_radius=8)
+                    lbl_thumb.image = ctk_img
+                    lbl_thumb.pack(pady=4)
+                    img_displayed = True
+                except Exception as e:
+                    print(f"[Gallery] Failed to load/fit thumbnail: {e}")
+
+            if not img_displayed:
+                placeholder_txt = "🎬 Video" if item.get("type") == "video" else "📷 Image"
+                lbl_thumb = ctk.CTkLabel(
+                    card, 
+                    text=placeholder_txt, 
+                    width=180,
+                    height=180,
+                    font=ctk.CTkFont(size=16, weight="bold"),
+                    text_color="#64748B",
+                    fg_color="#0F172A",
+                    corner_radius=8
+                )
+                lbl_thumb.pack(pady=4)
+
+            # Bind right-click on the image to show context menu
+            lbl_thumb.bind("<Button-3>", lambda e, it=item: self.show_gallery_context_menu(it, e))
+
+            # Overlay a small 3-dots button in the top-right corner of the image
+            btn_menu = ctk.CTkButton(
+                lbl_thumb,
+                text="⋮",
+                width=24,
+                height=24,
+                fg_color="#0F172A",
+                hover_color="#1E293B",
+                text_color="#F8FAFC",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                corner_radius=12,
+                command=lambda it=item: self.show_gallery_context_menu(it)
+            )
+            btn_menu.place(relx=0.95, rely=0.05, anchor="ne")
+
+            # If video, add duration overlay at the bottom-right of the image
+            if item.get("type") == "video":
+                dur_ms = item.get("duration", 0)
+                duration_str = "Video"
+                if dur_ms > 0:
+                    sec = int((dur_ms / 1000) % 60)
+                    mins = int((dur_ms / (1000 * 60)) % 60)
+                    hours = int(dur_ms / (1000 * 60 * 60))
+                    if hours > 0:
+                        duration_str = f"▶ {hours}:{mins:02d}:{sec:02d}"
+                    else:
+                        duration_str = f"▶ {mins:02d}:{sec:02d}"
+                else:
+                    duration_str = "▶ Video"
+
+                lbl_dur = ctk.CTkLabel(
+                    lbl_thumb,
+                    text=duration_str,
+                    font=ctk.CTkFont(size=9, weight="bold"),
+                    text_color="#F8FAFC",
+                    fg_color="#0F172A",
+                    corner_radius=4
+                )
+                lbl_dur.place(relx=0.95, rely=0.95, anchor="se")
+
+            # Modern thin metadata labels below the image
+            name = item.get("name", "Unknown")
+            short_name = name if len(name) <= 24 else name[:21] + "..."
+            lbl_name = ctk.CTkLabel(
+                card,
+                text=short_name,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="#F8FAFC"
+            )
+            lbl_name.pack(anchor="w", padx=2, pady=(2, 0))
+
+            size_formatted = format_file_size(item.get("size", 0))
+            lbl_size = ctk.CTkLabel(
+                card,
+                text=size_formatted,
+                font=ctk.CTkFont(size=9),
+                text_color="#94A3B8"
+            )
+            lbl_size.pack(anchor="w", padx=2, pady=(0, 2))
+
+    def download_gallery_item(self, item):
+        try:
+            from nexuslink.server.ws_server import send_message_to_all_peers_sync
+            send_message_to_all_peers_sync("download_gallery_item", {"uri": item.get("uri")})
+            self.gallery_status_lbl.configure(text=f"Requesting download of {item.get('name')}...")
+        except Exception as e:
+            self.gallery_status_lbl.configure(text=f"Download error: {e}")
+
+    def delete_gallery_item(self, item):
+        from tkinter import messagebox
+        if messagebox.askyesno(
+            "Confirm Delete",
+            f"Are you sure you want to delete '{item.get('name')}' from your phone's gallery?\nThis will remove it permanently and cannot be undone.",
+            parent=self.gallery_win
+        ):
+            if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+                return
+            try:
+                from nexuslink.server.ws_server import send_message_to_all_peers_sync
+                send_message_to_all_peers_sync("delete_gallery_item", {"uri": item.get("uri")})
+                self.gallery_status_lbl.configure(text=f"Requesting deletion of {item.get('name')}...")
+            except Exception as e:
+                self.gallery_status_lbl.configure(text=f"Deletion error: {e}")
+
+    def handle_delete_gallery_response(self, payload):
+        if not hasattr(self, "gallery_win") or not self.gallery_win or not self.gallery_win.winfo_exists():
+            return
+
+        uri = payload.get("uri")
+        success = payload.get("success", False)
+        error = payload.get("error", "")
+
+        if success:
+            card = self.gallery_cards.pop(uri, None)
+            if card:
+                card.destroy()
+            self.gallery_status_lbl.configure(text="Item deleted successfully from phone.")
+            self.gallery_items = [it for it in self.gallery_items if it.get("uri") != uri]
+        else:
+            from tkinter import messagebox
+            err_msg = error
+            if error == "permission_denied_or_security_exception":
+                err_msg = "Security Exception: Android OS blocked the deletion.\n(Typically on Android 10+ if the app doesn't own the file, it requires system dialog consent which isn't supported in background mode)."
+            messagebox.showerror("Delete Failed", f"Failed to delete item from phone.\n\nError: {err_msg}", parent=self.gallery_win)
+            self.gallery_status_lbl.configure(text=f"Deletion failed: {error}")
 
     def dismiss_notification(self, notif_id):
         try:

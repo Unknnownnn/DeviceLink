@@ -79,10 +79,17 @@ class NexusForegroundService : Service() {
             }
         }
 
-        // Observe clipboard updates to show high-priority heads-up notification
+        // Observe text clipboard updates to show high-priority heads-up notification
         serviceScope.launch {
             connectionManager.clipboardUpdates.collect { text ->
                 showClipboardNotification(text)
+            }
+        }
+
+        // Observe image clipboard updates from PC
+        serviceScope.launch {
+            connectionManager.clipboardImageUpdates.collect { imageB64 ->
+                showClipboardImageNotification(imageB64)
             }
         }
     }
@@ -189,6 +196,29 @@ class NexusForegroundService : Service() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(2, notification)
+    }
+
+    private fun showClipboardImageNotification(imageB64: String) {
+        val pasteIntent = Intent(this, PasteActivity::class.java).apply {
+            putExtra("CLIPBOARD_IMAGE_B64", imageB64)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pastePendingIntent = PendingIntent.getActivity(
+            this, 4, pasteIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, "nexus_clipboard_channel")
+            .setContentTitle("Image received from PC")
+            .setContentText("Tap to paste image to phone clipboard")
+            .setSmallIcon(android.R.drawable.ic_menu_gallery)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pastePendingIntent)
+            .addAction(android.R.drawable.ic_menu_save, "Paste Image", pastePendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(3, notification)
     }
 
     override fun onDestroy() {
