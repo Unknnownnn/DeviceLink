@@ -21,7 +21,9 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
       - name: Recreate google-services.json (Optional)
         env:
@@ -31,6 +33,15 @@ jobs:
             echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android_app/app/google-services.json
           else
             echo "GOOGLE_SERVICES_JSON_BASE64 secret not set, skipping step."
+          fi
+
+      - name: Verify google-services.json
+        run: |
+          if [ -f android_app/app/google-services.json ]; then
+            echo "SUCCESS: google-services.json successfully recreated!"
+            echo "File size: $(wc -c < android_app/app/google-services.json) bytes."
+          else
+            echo "WARNING: google-services.json was not found."
           fi
 
       - name: Grant execute permission for gradlew
