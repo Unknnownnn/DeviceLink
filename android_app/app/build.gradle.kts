@@ -15,8 +15,8 @@ android {
         applicationId = "com.nexuslink.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.6.2"
+        versionCode = 3
+        versionName = "1.6.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
