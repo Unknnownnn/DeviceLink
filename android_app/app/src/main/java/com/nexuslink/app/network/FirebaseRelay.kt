@@ -18,6 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 class FirebaseRelay(
     private val peerFingerprint: String,
     private val scope: CoroutineScope,
+    private val onError: ((String) -> Unit)? = null,
     private val onMessageReceived: (String) -> Unit
 ) {
     private val dbRef = FirebaseDatabase.getInstance("https://devicelink-d4665-default-rtdb.asia-southeast1.firebasedatabase.app/")
@@ -87,7 +88,9 @@ class FirebaseRelay(
             override fun onChildRemoved(snapshot: DataSnapshot) {}
             override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
             override fun onCancelled(error: DatabaseError) {
-                Log.e("FirebaseRelay", "Listen failed: \${error.message}")
+                val msg = "Listen failed (${error.code}): ${error.message}"
+                Log.e("FirebaseRelay", msg)
+                onError?.invoke(msg)
             }
         }
         listener = childListener
@@ -105,6 +108,11 @@ class FirebaseRelay(
         val b64 = encrypt(data)
         if (b64.isNotEmpty()) {
             dbRef.child("to_pc").push().setValue(b64)
+                .addOnFailureListener { e ->
+                    val msg = "Send failed: ${e.message}"
+                    Log.e("FirebaseRelay", msg, e)
+                    onError?.invoke(msg)
+                }
         }
     }
 }

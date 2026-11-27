@@ -12,6 +12,8 @@ android_app/.cxx/
 android_app/.kotlin/
 *.hprof
 
+rust_rewrite
+
 # Windows Agent
 **/__pycache__/
 **/*.pyc

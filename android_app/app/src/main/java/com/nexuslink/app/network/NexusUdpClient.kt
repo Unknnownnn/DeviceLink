@@ -65,18 +65,26 @@ class NexusUdpClient(
         }
     }
 
+    val localPort: Int
+        get() = socket?.localPort ?: 0
+
     suspend fun queryStun(localPort: Int): InetSocketAddress? {
         if (socket == null) {
             try {
                 socket = DatagramSocket(null).apply {
                     reuseAddress = true
-                    bind(InetSocketAddress(localPort))
+                    try {
+                        bind(InetSocketAddress(localPort))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "STUN: Port $localPort busy (${e.message}), falling back to ephemeral port")
+                        bind(InetSocketAddress(0))
+                    }
                     soTimeout = 0
                 }
                 isRunning = true
                 startListening(socket!!)
             } catch (e: Exception) {
-                Log.e(TAG, "STUN: Failed to create/bind socket on port $localPort: ${e.message}", e)
+                Log.e(TAG, "STUN: Failed to create/bind socket: ${e.message}", e)
                 return null
             }
         }

@@ -61,7 +61,13 @@ class FirebaseRelay:
 
     def _send_heartbeat(self):
         url = f"{self.db_url}/devices/{self.fingerprint}/pc_online.json"
-        self.session.put(url, json={"timestamp": int(time.time() * 1000)}, timeout=5)
+        resp = self.session.put(url, json={"timestamp": int(time.time() * 1000)}, timeout=5)
+        if resp.status_code >= 400:
+            log.warning(
+                "Firebase heartbeat failed (HTTP %d: %s). Check Firebase RTDB security rules.",
+                resp.status_code,
+                resp.text[:120],
+            )
 
     def encrypt(self, data: bytes) -> str:
         if not AESGCM: return base64.b64encode(data).decode('utf-8')
@@ -89,8 +95,15 @@ class FirebaseRelay:
                 # Use a connect timeout of 10s and read timeout of 45s to detect half-open sockets (VPN/network drops)
                 response = self.session.get(url, headers={'Accept': 'text/event-stream'}, stream=True, timeout=(10, 45))
                 if response.status_code != 200:
-                    log.warning("Firebase listener HTTP status %d, retrying...", response.status_code)
-                    time.sleep(5)
+                    if response.status_code in (401, 403):
+                        log.error(
+                            "Firebase RTDB permission denied (HTTP %d). Update Firebase Realtime Database rules to allow read/write.",
+                            response.status_code,
+                        )
+                        time.sleep(30)
+                    else:
+                        log.warning("Firebase listener HTTP status %d, retrying...", response.status_code)
+                        time.sleep(5)
                     continue
 
                 client = sseclient.SSEClient(response)
@@ -139,6 +152,8 @@ class FirebaseRelay:
         url = f"{self.db_url}/devices/{self.fingerprint}/to_phone.json"
         try:
             encrypted_b64 = self.encrypt(data)
-            self.session.post(url, json=encrypted_b64, timeout=5)
+            resp = self.session.post(url, json=encrypted_b64, timeout=5)
+            if resp.status_code >= 400:
+                log.warning("Firebase send failed (HTTP %d: %s)", resp.status_code, resp.text[:120])
         except Exception as e:
             log.warning("Firebase send failed: %s", e)

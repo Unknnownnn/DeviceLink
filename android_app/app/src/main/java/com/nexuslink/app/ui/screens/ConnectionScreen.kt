@@ -577,7 +577,10 @@ fun ConnectionScreen(
                                      colors = ButtonDefaults.buttonColors(containerColor = Blue500, contentColor = Color.White),
                                      shape = RoundedCornerShape(12.dp)
                                  ) { Text("Push Clipboard", maxLines = 1) }
-                                 val isCloud = uiState.host == "cloud"
+                                 // Use the actual transport, not the navigation arg: a saved PC may
+                                 // enter with host="cloud" but connect via direct LAN/UDP (Stage 1/2).
+                                 // Only disable file transfer on a genuine Cloud Relay (Stage 3).
+                                 val isCloud = (uiState.connectionState as? ConnectionState.Connected)?.host == "cloud"
                                  Button(
                                      onClick = { filePickerLauncher.launch("*/*") },
                                      modifier = Modifier.weight(1f),

@@ -434,8 +434,16 @@ class ConnectionManager @Inject constructor(
             val stunResponse = CompletableDeferred<JSONObject>()
             val cloudProbeId = UUID.randomUUID().toString()
             val cloudResponse = CompletableDeferred<Unit>()
+            val relayError = CompletableDeferred<String>()
             val relay = try {
-                FirebaseRelay(peerFingerprint, scope) { jsonStr ->
+                FirebaseRelay(
+                    peerFingerprint = peerFingerprint,
+                    scope = scope,
+                    onError = { err ->
+                        addLog("Cloud relay error: $err")
+                        relayError.complete(err)
+                    }
+                ) { jsonStr ->
                     scope.launch {
                         try {
                             val json = JSONObject(jsonStr)
@@ -465,12 +473,13 @@ class ConnectionManager @Inject constructor(
             udpClient = udp
             
             val localIp = udp.getLocalIp()
-            val localPort = 47201
+            val requestedPort = 47201
             
             _uiState.update { it.copy(connectionPhase = "Stage 2: Querying STUN server") }
             addLog("Querying STUN server (stun.l.google.com)...")
-            val stunAddr = udp.queryStun(localPort)
+            val stunAddr = udp.queryStun(requestedPort)
             ensureActive()
+            val localPort = udp.localPort.takeIf { it > 0 } ?: requestedPort
             if (stunAddr != null) {
                 addLog("STUN resolved public IP: ${stunAddr.hostString}:${stunAddr.port}")
             } else {
@@ -489,7 +498,12 @@ class ConnectionManager @Inject constructor(
             
             _uiState.update { it.copy(connectionPhase = "Stage 2: Exchanging connection candidates") }
             sendFirebaseMsg("stun_initiate", initPayload, relay)
-            val stunResponsePayload = withTimeoutOrNull(10000) { stunResponse.await() }
+            val stunResponsePayload = withTimeoutOrNull(10000) {
+                kotlinx.coroutines.selects.select<JSONObject?> {
+                    stunResponse.onAwait { it }
+                    relayError.onAwait { null }
+                }
+            }
             
             if (stunResponsePayload != null) {
                 _uiState.update { it.copy(connectionPhase = "Stage 2: Punching UDP hole") }
@@ -548,16 +562,30 @@ class ConnectionManager @Inject constructor(
             udpClient = null
             
             // Stage 3: Fallback to Firebase Relay
+            if (relayError.isCompleted) {
+                val err = relayError.getCompleted()
+                stopFirebaseRelay()
+                addLog("Stage 3 skipped: Cloud Relay rejected connection ($err).")
+                _uiState.update { it.copy(connectionState = ConnectionState.Error("Cloud Relay unavailable: $err")) }
+                return@launch
+            }
             _uiState.update { it.copy(
                 connectionState = ConnectionState.Connecting,
                 connectionPhase = "Stage 3: Connecting via Cloud Relay"
             ) }
             addLog("Stage 3: STUN failed. Falling back to Firebase Cloud Relay.")
             sendFirebaseMsg("ping", JSONObject().put("connection_probe", cloudProbeId), relay)
-            if (withTimeoutOrNull(10000) { cloudResponse.await() } == null) {
+            val cloudOk = withTimeoutOrNull(10000) {
+                kotlinx.coroutines.selects.select<Boolean> {
+                    cloudResponse.onAwait { true }
+                    relayError.onAwait { false }
+                }
+            } ?: false
+            if (!cloudOk) {
+                val errDetail = if (relayError.isCompleted) " (${relayError.getCompleted()})" else ""
                 stopFirebaseRelay()
-                addLog("Stage 3 failed: PC did not respond via Cloud Relay.")
-                _uiState.update { it.copy(connectionState = ConnectionState.Error("Could not reach the PC.")) }
+                addLog("Stage 3 failed: PC did not respond via Cloud Relay$errDetail.")
+                _uiState.update { it.copy(connectionState = ConnectionState.Error("Could not reach the PC$errDetail.")) }
                 return@launch
             }
             _uiState.update { it.copy(
