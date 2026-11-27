@@ -7,6 +7,11 @@ plugins {
     alias(libs.plugins.google.services)
 }
 
+val releaseKeystoreFile = providers.environmentVariable("ANDROID_KEYSTORE_FILE").orNull
+val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
+
 android {
     namespace = "com.nexuslink.app"
     compileSdk = 35
@@ -15,14 +20,24 @@ android {
         applicationId = "com.nexuslink.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.6.4"
+        versionCode = providers.environmentVariable("ANDROID_VERSION_CODE").orElse("3").get().toInt()
+        versionName = providers.environmentVariable("ANDROID_VERSION_NAME").orElse("1.6.4").get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseKeystoreFile?.let { file(it) }
+            storePassword = releaseKeystorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

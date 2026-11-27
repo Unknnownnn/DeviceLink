@@ -224,7 +224,7 @@ fun SettingsScreen(
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                                 Text(
-                                    text = "A newer build is ready on GitHub. Tap below to download and self-install app-debug.apk.",
+                                    text = "A newer build is ready on GitHub. Tap below to download and self-install the update.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = OnSurfaceDim
                                 )

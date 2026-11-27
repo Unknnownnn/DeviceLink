@@ -23,7 +23,7 @@ class GitHubUpdater(
     private val context: Context,
     private val githubOwner: String = "Unknnownnn",
     private val githubRepo: String = "DeviceLink",
-    private val apkFileName: String = "app-debug.apk",
+    private val apkFileName: String = "app-release.apk",
     private val client: OkHttpClient = OkHttpClient()
 ) {
     init {

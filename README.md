@@ -95,6 +95,8 @@ Pairing binds an Android device's Ed25519 public key to the Windows agent's peer
 
 The apps include auto-updating features and automatically fetch the latest release when available.
 
+Android release APKs are signed with a persistent release keystore so updates can be installed over previous releases. Generate a keystore once with `keytool -genkeypair -v -keystore devicelink-release.jks -alias devicelink -keyalg RSA -keysize 2048 -validity 10000`, then configure these GitHub repository secrets: `ANDROID_KEYSTORE_BASE64` (the keystore file encoded as base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. Never commit the keystore or its passwords, and back them up securely; losing the keystore prevents signing compatible updates. Release tags must use the `vMAJOR.MINOR.PATCH` format.
+
 
 
 ### Below are the instructions on how to build your own binaries via the source code
