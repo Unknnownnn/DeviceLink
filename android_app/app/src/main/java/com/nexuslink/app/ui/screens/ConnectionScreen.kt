@@ -188,7 +188,16 @@ fun ConnectionScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Session: $host", style = MaterialTheme.typography.titleLarge) },
+                title = {
+                    val connectedHost = (uiState.connectionState as? ConnectionState.Connected)?.host
+                    val sessionHost = connectedHost ?: host.takeUnless { it == "cloud" }
+                    val title = when (sessionHost) {
+                        null -> "PC Session"
+                        "cloud" -> "Session: Cloud Relay"
+                        else -> "Session: $sessionHost"
+                    }
+                    Text(title, style = MaterialTheme.typography.titleLarge)
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Surface800,
                     titleContentColor = OnSurface

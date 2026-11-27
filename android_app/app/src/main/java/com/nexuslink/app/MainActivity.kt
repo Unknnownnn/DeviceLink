@@ -1,6 +1,7 @@
 package com.nexuslink.app
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,19 +17,23 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.nexuslink.app.data.PeerStore
 import com.nexuslink.app.network.ConnectionManager
 import com.nexuslink.app.ui.screens.ConnectionScreen
 import com.nexuslink.app.ui.screens.DeviceListScreen
 import com.nexuslink.app.ui.screens.QrScannerScreen
 import com.nexuslink.app.ui.theme.NexusLinkTheme
+import com.nexuslink.app.ui.viewmodels.DiscoveryViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
  * Single-activity host for all NexusLink Compose screens.
  *
  * Navigation graph:
- *   device_list → qr_scanner/{host}/{port}
+ *   device_list → qr_scanner
  *   qr_scanner  → connection/{host}/{port}/{fingerprint}
  *   connection  → (back to device_list)
  */
@@ -37,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var connectionManager: ConnectionManager
+
+    @Inject
+    lateinit var peerStore: PeerStore
 
     private var shouldRouteToConnected by mutableStateOf(false)
 
@@ -84,6 +92,7 @@ class MainActivity : ComponentActivity() {
                 NexusLinkNavGraph(
                     navController = navController,
                     connectionManager = connectionManager,
+                    peerStore = peerStore,
                     shouldRouteToConnected = shouldRouteToConnected,
                     onRouteHandled = { shouldRouteToConnected = false }
                 )
@@ -108,21 +117,18 @@ class MainActivity : ComponentActivity() {
 
 object Routes {
     const val DEVICE_LIST = "device_list"
-    const val QR_SCANNER  = "qr_scanner?host={host}&port={port}"
+    const val QR_SCANNER  = "qr_scanner"
     const val CONNECTION  = "connection/{host}/{port}/{fingerprint}"
     const val SETTINGS    = "settings"
 
-    fun qrScanner(host: String? = null, port: Int? = null): String {
-        return if (host != null && port != null) "qr_scanner?host=$host&port=$port"
-        else "qr_scanner"
-    }
-    fun connection(host: String, port: Int, fingerprint: String) = "connection/$host/$port/$fingerprint"
+    fun connection(host: String, port: Int, fingerprint: String) = "connection/${Uri.encode(host)}/$port/$fingerprint"
 }
 
 @Composable
 fun NexusLinkNavGraph(
     navController: NavHostController,
     connectionManager: ConnectionManager,
+    peerStore: PeerStore,
     shouldRouteToConnected: Boolean,
     onRouteHandled: () -> Unit
 ) {
@@ -133,7 +139,7 @@ fun NexusLinkNavGraph(
             val host = uiState.host
             val port = uiState.port
             val fingerprint = uiState.peerFingerprint
-            if (host.isNotEmpty() && port != 0 && !fingerprint.isNullOrEmpty()) {
+            if (host.isNotEmpty() && !fingerprint.isNullOrEmpty()) {
                 navController.navigate(Routes.connection(host, port, fingerprint)) {
                     launchSingleTop = true
                 }
@@ -150,13 +156,14 @@ fun NexusLinkNavGraph(
             DeviceListScreen(
                 onDeviceSelected = { host, port, isPaired, fingerprint ->
                     if (isPaired && fingerprint != null) {
+                        DiscoveryViewModel.hasAttemptedConnectionThisSession = true
                         navController.navigate(Routes.connection(host, port, fingerprint))
                     } else {
-                        navController.navigate(Routes.qrScanner(host, port))
+                        navController.navigate(Routes.QR_SCANNER)
                     }
                 },
                 onManualScan = {
-                    navController.navigate(Routes.qrScanner())
+                    navController.navigate(Routes.QR_SCANNER)
                 },
                 onSettingsClicked = {
                     navController.navigate(Routes.SETTINGS)
@@ -170,24 +177,14 @@ fun NexusLinkNavGraph(
             )
         }
 
-        composable(
-            route = Routes.QR_SCANNER,
-            arguments = listOf(
-                androidx.navigation.navArgument("host") { nullable = true },
-                androidx.navigation.navArgument("port") { nullable = true; type = androidx.navigation.NavType.StringType }
-            )
-        ) { backStack ->
-            val host = backStack.arguments?.getString("host")
-            val port = backStack.arguments?.getString("port")?.toIntOrNull()
-            QrScannerScreen(
-                targetHost = host,
-                targetPort = port,
-                onPairingComplete = { scannedHost, scannedPort, fingerprint ->
-                    navController.navigate(Routes.connection(scannedHost, scannedPort, fingerprint)) {
-                        popUpTo(Routes.DEVICE_LIST)
-                    }
+        composable(Routes.QR_SCANNER) {
+            QrScannerScreen { fingerprint, endpoint ->
+                withContext(Dispatchers.IO) { peerStore.rememberPairing(fingerprint, endpoint) }
+                DiscoveryViewModel.hasAttemptedConnectionThisSession = true
+                navController.navigate(Routes.connection("cloud", 0, fingerprint)) {
+                    popUpTo(Routes.DEVICE_LIST)
                 }
-            )
+            }
         }
 
         composable(Routes.CONNECTION) { backStack ->

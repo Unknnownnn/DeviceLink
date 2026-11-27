@@ -70,6 +70,7 @@ class NsdDiscoveryManager @Inject constructor(
         val discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 Log.e(TAG, "Discovery start failed: $errorCode")
+                close()
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -96,10 +97,14 @@ class NsdDiscoveryManager @Inject constructor(
             }
         }
 
-        nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-
-        // Emit initial empty list immediately
         trySend(emptyList())
+        try {
+            nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not start mDNS discovery", e)
+            close()
+            return@callbackFlow
+        }
 
         awaitClose {
             try {

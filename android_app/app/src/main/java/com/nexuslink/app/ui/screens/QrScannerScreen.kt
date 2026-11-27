@@ -38,19 +38,23 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.nexuslink.app.data.LanEndpoint
 import com.nexuslink.app.ui.theme.Cyan400
 import com.nexuslink.app.ui.theme.Surface900
+import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.Executors
+
+private val pairingFingerprint = Regex("[0-9a-f]{64}")
 
 @Composable
 fun QrScannerScreen(
-    targetHost: String?,
-    targetPort: Int?,
-    onPairingComplete: (host: String, port: Int, fingerprint: String) -> Unit,
+    onPairingComplete: suspend (fingerprint: String, endpoint: LanEndpoint) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
 
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var hasScanned by remember { mutableStateOf(false) }
@@ -147,18 +151,24 @@ fun QrScannerScreen(
                         }
 
                         processImageProxy(scanner, imageProxy) { barcodeValue ->
+                            if (hasScanned) return@processImageProxy
                             try {
                                 val json = JSONObject(barcodeValue)
-                                val fp = json.getString("fp")
-                                val scannedHost = json.getString("host")
-                                val scannedPort = json.getInt("port")
-
-                                // Use scanned IP if we didn't discover one via mDNS
-                                val finalHost = if (targetHost.isNullOrBlank()) scannedHost else targetHost
-                                val finalPort = targetPort ?: scannedPort
+                                val fp = json.getString("fp").lowercase()
+                                val host = json.getString("host").trim()
+                                val port = json.getInt("port")
+                                require(pairingFingerprint.matches(fp) && host.isNotBlank() && port in 1..65535)
 
                                 hasScanned = true
-                                onPairingComplete(finalHost, finalPort, fp)
+                                scope.launch {
+                                    try {
+                                        onPairingComplete(fp, LanEndpoint(host, port))
+                                    } catch (e: IOException) {
+                                        Log.e("QrScanner", "Failed to save pairing", e)
+                                        errorMessage = "Couldn't save this PC. Try scanning again."
+                                        hasScanned = false
+                                    }
+                                }
                             } catch (e: Exception) {
                                 errorMessage = "Invalid QR code format"
                             }

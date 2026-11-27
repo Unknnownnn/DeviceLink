@@ -15,24 +15,30 @@ import android.util.Base64
 import java.io.ByteArrayOutputStream
 import android.util.Log
 import com.nexuslink.app.data.IdentityManager
+import com.nexuslink.app.data.LanEndpoint
 import com.nexuslink.app.data.PeerStore
-import com.nexuslink.app.data.TrustedPeer
 import com.nexuslink.app.data.PreferencesManager
 import com.nexuslink.app.services.CallBridgeManager
 import com.nexuslink.app.services.ConnManagerProxy
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import java.net.DatagramSocket
-import java.net.InetSocketAddress
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import android.provider.MediaStore
@@ -307,8 +313,10 @@ class ConnectionManager @Inject constructor(
     }
 
     fun connect(host: String, port: Int, peerFingerprint: String) {
-        connectJob?.cancel()
-        if (client != null || udpClient != null) {
+        val current = _uiState.value
+        if (current.peerFingerprint == peerFingerprint && current.connectionState is ConnectionState.Connected) return
+
+        if (connectJob != null || client != null || udpClient != null || firebaseRelay != null) {
             disconnect()
         }
 
@@ -326,68 +334,49 @@ class ConnectionManager @Inject constructor(
         addLog("Connecting to secure agent...")
 
         connectJob = scope.launch {
-            // Stage 1: Try Local Connection (mDNS/WebSocket)
-            var localSuccess = false
-            var targetHost = host
-            var targetPort = port
-
-            if (targetHost.equals("cloud", ignoreCase = true)) {
-                _uiState.update { it.copy(connectionPhase = "Stage 1: Scanning local network via mDNS") }
-                addLog("Stage 1: Device is listed as Cloud. Scanning local network for mDNS endpoint")
-                try {
-                    kotlinx.coroutines.withTimeout(2500) {
-                        discoveryManager.discoverDevices().collect { devices ->
-                            val match = devices.find { it.fingerprint == peerFingerprint }
-                            if (match != null) {
-                                targetHost = match.host
-                                targetPort = match.port
-                                addLog("mDNS resolved local target: $targetHost:$targetPort")
-                                throw Exception("MATCH_FOUND")
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e.message != "MATCH_FOUND") {
-                        addLog("mDNS scan completed (no local matching device found).")
-                    }
-                }
+            val peer = peerStore.getPeer(peerFingerprint)
+            if (peer == null) {
+                _uiState.update { it.copy(connectionState = ConnectionState.Error("This PC is no longer paired.")) }
+                return@launch
             }
 
-            if (!targetHost.equals("cloud", ignoreCase = true)) {
-                _uiState.update { it.copy(connectionPhase = "Stage 1: Connecting to local agent via mDNS") }
-                addLog("Stage 1: Attempting local mDNS connection to $targetHost:$targetPort...")
+            // Stage 1: Try Local Connection (mDNS/WebSocket)
+            val discoveredEndpoint = if (host == "cloud") {
+                _uiState.update { it.copy(connectionPhase = "Stage 1: Scanning local network via mDNS") }
+                val discovered = withTimeoutOrNull(2500) {
+                    discoveryManager.discoverDevices()
+                        .mapNotNull { devices -> devices.find { it.fingerprint == peerFingerprint } }
+                        .firstOrNull()
+                }
+                discovered?.let { LanEndpoint(it.host, it.port) }
+            } else {
+                LanEndpoint(host, port)
+            }
+
+            for (endpoint in listOfNotNull(discoveredEndpoint, peer.lanEndpoint).distinct()) {
+                _uiState.update { it.copy(
+                    connectionState = ConnectionState.Connecting,
+                    connectionPhase = "Stage 1: Connecting to local agent"
+                ) }
+                addLog("Stage 1: Attempting local connection to ${endpoint.host}:${endpoint.port}...")
                 val wsClient = NexusWebSocketClient(
-                    host = targetHost,
-                    port = targetPort,
+                    host = endpoint.host,
+                    port = endpoint.port,
                     identity = identity,
                     peerFingerprint = peerFingerprint,
                     scope = scope
                 )
                 client = wsClient
                 
-                val wsStateJob = launch {
-                    wsClient.state.collect { state ->
-                        _uiState.update { it.copy(connectionState = state) }
-                        if (state is ConnectionState.Connected) {
-                            localSuccess = true
-                        }
-                    }
-                }
+                val wsStateJob = launch { showTransportState(wsClient.state) }
                 
                 val wsEventJob = launch {
                     for (event in wsClient.events) {
                         recordActivity()
                         when (event) {
                             is SessionEvent.SessionEstablished -> {
-                                addLog("Secure mDNS session established: ${event.deviceName}")
-                                val existingPeer = peerStore.getPeer(peerFingerprint)
-                                if (existingPeer == null || existingPeer.displayName != event.deviceName) {
-                                    peerStore.addPeer(TrustedPeer(
-                                        fingerprint = peerFingerprint,
-                                        ed25519PublicKeyB64 = event.peerEd25519PubB64,
-                                        displayName = event.deviceName,
-                                    ))
-                                }
+                                addLog("Secure local session established: ${event.deviceName}")
+                                peerStore.confirmPeer(peerFingerprint, event.peerEd25519PubB64, event.deviceName, endpoint)
                             }
                             is SessionEvent.MessageReceived -> handleMessageReceived(event)
                             is SessionEvent.ClipboardUpdate -> {
@@ -415,49 +404,59 @@ class ConnectionManager @Inject constructor(
                     }
                 }
                 
-                wsClient.connect()
-                
-                // Wait up to 6 seconds
-                for (i in 0 until 60) {
-                    if (localSuccess) break
-                    delay(100)
+                val localSuccess = try {
+                    wsClient.connect()
+                    awaitDirectConnection(wsClient.state, 6000)
+                } catch (e: IllegalArgumentException) {
+                    addLog("Invalid LAN endpoint: ${e.message}")
+                    false
                 }
-                
+
                 if (localSuccess) {
-                    addLog("Stage 1 success: connected via mDNS!")
+                    addLog("Stage 1 success: connected over the local network!")
                     return@launch
-                } else {
-                    addLog("Stage 1 failed or timed out. Cleaning up WS client...")
-                    wsStateJob.cancel()
-                    wsEventJob.cancel()
-                    wsClient.disconnect()
-                    client = null
                 }
+                addLog("Stage 1 failed or timed out. Cleaning up WS client...")
+                wsStateJob.cancelAndJoin()
+                wsEventJob.cancelAndJoin()
+                wsClient.disconnect()
+                client = null
             }
             
             // Stage 2: Try STUN / UDP Hole Punching
-            _uiState.update { it.copy(connectionPhase = "Stage 2: Initiating STUN UDP hole punching...") }
+            _uiState.update { it.copy(
+                connectionState = ConnectionState.Connecting,
+                connectionPhase = "Stage 2: Initiating STUN UDP hole punching..."
+            ) }
             addLog("Stage 2: Attempting STUN with UDP hole punching...")
-            
+
             stopFirebaseRelay()
-            val signalReceived = kotlinx.coroutines.channels.Channel<JSONObject>(kotlinx.coroutines.channels.Channel.BUFFERED)
-            val relay = FirebaseRelay(peerFingerprint, scope) { jsonStr ->
-                recordActivity()
-                scope.launch {
-                    try {
-                        val json = JSONObject(jsonStr)
-                        val type = json.optString("type")
-                        val payload = json.optJSONObject("payload") ?: JSONObject()
-                        
-                        if (type == "stun_response") {
-                            signalReceived.send(payload)
-                        } else {
-                            handleMessageReceived(SessionEvent.MessageReceived(type, payload))
+            val stunResponse = CompletableDeferred<JSONObject>()
+            val cloudProbeId = UUID.randomUUID().toString()
+            val cloudResponse = CompletableDeferred<Unit>()
+            val relay = try {
+                FirebaseRelay(peerFingerprint, scope) { jsonStr ->
+                    scope.launch {
+                        try {
+                            val json = JSONObject(jsonStr)
+                            val type = json.optString("type")
+                            val payload = json.optJSONObject("payload") ?: JSONObject()
+
+                            when {
+                                type == "stun_response" -> stunResponse.complete(payload)
+                                type == "pong" && payload.optJSONObject("echo")?.optString("connection_probe") == cloudProbeId ->
+                                    cloudResponse.complete(Unit)
+                                else -> handleMessageReceived(SessionEvent.MessageReceived(type, payload))
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to handle Firebase message", e)
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse firebase message", e)
                     }
                 }
+            } catch (e: IllegalStateException) {
+                addLog("Cloud relay is unavailable: ${e.message}")
+                _uiState.update { it.copy(connectionState = ConnectionState.Error("Could not reach the PC. Cloud relay is unavailable.")) }
+                return@launch
             }
             firebaseRelay = relay
             relay.startListening()
@@ -468,22 +467,14 @@ class ConnectionManager @Inject constructor(
             val localIp = udp.getLocalIp()
             val localPort = 47201
             
-            var stunSuccess = false
-            var stunAddr: InetSocketAddress? = null
-            
-            try {
-                _uiState.update { it.copy(connectionPhase = "Stage 2: Querying STUN server") }
-                addLog("Querying STUN server (stun.l.google.com)...")
-                stunAddr = udp.queryStun(localPort)
-                
-                if (stunAddr != null) {
-                    stunSuccess = true
-                    addLog("STUN resolved public IP: ${stunAddr.address?.hostAddress ?: stunAddr.hostString}:${stunAddr.port}")
-                } else {
-                    addLog("STUN query timed out. Proceeding with local IP as public endpoint.")
-                }
-            } catch (e: Exception) {
-                addLog("STUN binding/query error: ${e.message}")
+            _uiState.update { it.copy(connectionPhase = "Stage 2: Querying STUN server") }
+            addLog("Querying STUN server (stun.l.google.com)...")
+            val stunAddr = udp.queryStun(localPort)
+            ensureActive()
+            if (stunAddr != null) {
+                addLog("STUN resolved public IP: ${stunAddr.hostString}:${stunAddr.port}")
+            } else {
+                addLog("STUN query timed out. Proceeding with local IP as public endpoint.")
             }
             
             val publicIp = stunAddr?.address?.hostAddress ?: stunAddr?.hostString ?: localIp
@@ -496,38 +487,15 @@ class ConnectionManager @Inject constructor(
                 put("public_port", publicPort)
             }
             
-            val stunInitMsg = JSONObject().apply {
-                put("type", "stun_initiate")
-                put("id", java.util.UUID.randomUUID().toString())
-                put("payload", initPayload)
-            }
-            
             _uiState.update { it.copy(connectionPhase = "Stage 2: Exchanging connection candidates") }
-            addLog("Sending candidates to PC via Cloud Relay...")
-            relay.sendMessage(stunInitMsg.toString().toByteArray(Charsets.UTF_8))
+            sendFirebaseMsg("stun_initiate", initPayload, relay)
+            val stunResponsePayload = withTimeoutOrNull(10000) { stunResponse.await() }
             
-            var stunResponsePayload: JSONObject? = null
-            try {
-                kotlinx.coroutines.withTimeout(10000) {
-                    stunResponsePayload = signalReceived.receive()
-                }
-            } catch (e: Exception) {
-                addLog("Timed out waiting for stun_response from PC.")
-            }
-            
-            var udpSuccess = false
             if (stunResponsePayload != null) {
                 _uiState.update { it.copy(connectionPhase = "Stage 2: Punching UDP hole") }
                 addLog("Received PC candidates. Punching UDP hole...")
                 
-                val udpStateJob = launch {
-                    udp.state.collect { state ->
-                        _uiState.update { it.copy(connectionState = state) }
-                        if (state is ConnectionState.Connected) {
-                            udpSuccess = true
-                        }
-                    }
-                }
+                val udpStateJob = launch { showTransportState(udp.state) }
                 
                 val udpEventJob = launch {
                     for (event in udp.events) {
@@ -535,14 +503,7 @@ class ConnectionManager @Inject constructor(
                         when (event) {
                             is SessionEvent.SessionEstablished -> {
                                 addLog("Secure STUN/UDP session established!")
-                                val existingPeer = peerStore.getPeer(peerFingerprint)
-                                if (existingPeer == null || existingPeer.displayName != event.deviceName) {
-                                    peerStore.addPeer(TrustedPeer(
-                                        fingerprint = peerFingerprint,
-                                        ed25519PublicKeyB64 = event.peerEd25519PubB64,
-                                        displayName = event.deviceName,
-                                    ))
-                                }
+                                peerStore.confirmPeer(peerFingerprint, event.peerEd25519PubB64)
                             }
                             is SessionEvent.MessageReceived -> handleMessageReceived(event)
                             is SessionEvent.ClipboardUpdate -> {
@@ -570,41 +531,60 @@ class ConnectionManager @Inject constructor(
                     }
                 }
                 
-                udp.startHolePunchingLoop(localIp, localPort, publicIp, publicPort, stunResponsePayload!!)
-                
-                for (i in 0 until 80) {
-                    if (udpSuccess) break
-                    delay(100)
-                }
-                
-                if (udpSuccess) {
+                udp.startHolePunchingLoop(localIp, localPort, publicIp, publicPort, stunResponsePayload)
+
+                if (awaitDirectConnection(udp.state, 8000)) {
                     addLog("Stage 2 success: Connected directly via UDP hole punch!")
                     startHeartbeatLoop(isUdp = true)
                     return@launch
-                } else {
-                    addLog("Stage 2 failed: UDP connection timed out.")
-                    udpStateJob.cancel()
-                    udpEventJob.cancel()
-                    udp.disconnect()
-                    udpClient = null
                 }
+                addLog("Stage 2 failed: UDP connection could not be established.")
+                udpStateJob.cancelAndJoin()
+                udpEventJob.cancelAndJoin()
             } else {
-                // Clean up UDP client when skipping Stage 2
-                udp.disconnect()
-                udpClient = null
+                addLog("Timed out waiting for stun_response from PC.")
             }
+            udp.disconnect()
+            udpClient = null
             
             // Stage 3: Fallback to Firebase Relay
+            _uiState.update { it.copy(
+                connectionState = ConnectionState.Connecting,
+                connectionPhase = "Stage 3: Connecting via Cloud Relay"
+            ) }
+            addLog("Stage 3: STUN failed. Falling back to Firebase Cloud Relay.")
+            sendFirebaseMsg("ping", JSONObject().put("connection_probe", cloudProbeId), relay)
+            if (withTimeoutOrNull(10000) { cloudResponse.await() } == null) {
+                stopFirebaseRelay()
+                addLog("Stage 3 failed: PC did not respond via Cloud Relay.")
+                _uiState.update { it.copy(connectionState = ConnectionState.Error("Could not reach the PC.")) }
+                return@launch
+            }
             _uiState.update { it.copy(
                 connectionState = ConnectionState.Connected("cloud", 0),
                 connectionPhase = "Stage 3: Connected via Cloud Relay"
             ) }
-            addLog("Stage 3: STUN failed. Falling back to Firebase Cloud Relay.")
             addLog("Connected securely via Cloud Relay.")
             sendMessage("request_sync", JSONObject().apply { put("device_name", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}") })
             startHeartbeatLoop(isUdp = false)
         }
     }
+
+    private suspend fun showTransportState(states: StateFlow<ConnectionState>) {
+        var connected = false
+        states.collect { state ->
+            if (state is ConnectionState.Connected) connected = true
+            // Keep the connection screen in progress while a failed transport falls back.
+            if (connected || state is ConnectionState.Handshaking) {
+                _uiState.update { it.copy(connectionState = state) }
+            }
+        }
+    }
+
+    private suspend fun awaitDirectConnection(states: StateFlow<ConnectionState>, timeoutMillis: Long): Boolean =
+        withTimeoutOrNull(timeoutMillis) {
+            states.first { it is ConnectionState.Connected || it is ConnectionState.Error } is ConnectionState.Connected
+        } ?: false
 
     private suspend fun handleMessageReceived(event: SessionEvent.MessageReceived) {
         recordActivity()

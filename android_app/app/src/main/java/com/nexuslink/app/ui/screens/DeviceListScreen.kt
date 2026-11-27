@@ -47,8 +47,7 @@ import kotlinx.coroutines.launch
 /**
  * Device Discovery Screen.
  *
- * Shows all NexusLink-capable PCs found on the local network via mDNS.
- * Tapping a device navigates to the QR scanner for pairing.
+ * Shows saved PCs and PCs discovered on the local network via mDNS.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +69,7 @@ fun DeviceListScreen(
     val updaterState by updater.state.collectAsState()
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
     val updatePromptSnoozeUntilMs by viewModel.preferencesManager.updatePromptSnoozeUntilMs.collectAsState()
 
     var showUpdatePopup by remember { mutableStateOf(false) }
@@ -108,12 +108,12 @@ fun DeviceListScreen(
         }
     }
 
-    // Auto-connect to a verified device if found
-    LaunchedEffect(devices, connectionState, autoConnectEnabled, preferredFp, trustedPeers) {
-        if (autoConnectEnabled && 
-            connectionState is ConnectionState.Disconnected && 
+    LaunchedEffect(devices, connectionState, autoConnectEnabled, preferredFp, trustedPeers, lifecycleState) {
+        if (lifecycleState == Lifecycle.State.RESUMED &&
+            autoConnectEnabled &&
+            connectionState is ConnectionState.Disconnected &&
             trustedPeers.isNotEmpty() &&
-            !DiscoveryViewModel.hasAutoConnectedThisSession
+            !DiscoveryViewModel.hasAttemptedConnectionThisSession
         ) {
             val targetFp = if (trustedPeers.size == 1) {
                 trustedPeers.keys.first()
@@ -122,12 +122,9 @@ fun DeviceListScreen(
             }
 
             if (targetFp != null) {
-                val matchingDevice = devices.find { it.fingerprint == targetFp && it.host != "cloud" }
-                if (matchingDevice != null && matchingDevice.fingerprint != null) {
-                    val fp = matchingDevice.fingerprint
-                    DiscoveryViewModel.hasAutoConnectedThisSession = true
-                    viewModel.markAutoConnectAttempted(fp)
-                    onDeviceSelected(matchingDevice.host, matchingDevice.port, true, fp)
+                val matchingDevice = devices.find { it.fingerprint == targetFp && it.isPaired && it.isReachable }
+                if (matchingDevice != null) {
+                    onDeviceSelected(matchingDevice.host, matchingDevice.port, true, targetFp)
                 }
             }
         }
@@ -240,7 +237,7 @@ fun DeviceListScreen(
                             color = Color.White,
                         )
                         Text(
-                            text = "Local Network Devices",
+                            text = "Saved & Nearby PCs",
                             style = MaterialTheme.typography.labelSmall,
                             color = OnSurfaceDim,
                         )
@@ -333,6 +330,7 @@ private fun AnimatedDeviceCard(
 
 @Composable
 private fun DeviceCard(device: NexusDevice, isConnected: Boolean, onClick: () -> Unit) {
+    val remoteAvailable = device.host == "cloud" && device.isReachable
     val cardModifier = if (isConnected) {
         val infiniteTransition = rememberInfiniteTransition(label = "glowTransition")
         val glowAlpha by infiniteTransition.animateFloat(
@@ -388,9 +386,9 @@ private fun DeviceCard(device: NexusDevice, isConnected: Boolean, onClick: () ->
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = if (device.host == "cloud") Icons.Default.Cloud else Icons.Default.Computer,
+                    imageVector = if (remoteAvailable) Icons.Default.Cloud else Icons.Default.Computer,
                     contentDescription = null,
-                    tint = if (device.host == "cloud") Cyan400 else Blue400,
+                    tint = if (remoteAvailable) Cyan400 else Blue400,
                     modifier = Modifier.size(24.dp),
                 )
             }
@@ -406,7 +404,11 @@ private fun DeviceCard(device: NexusDevice, isConnected: Boolean, onClick: () ->
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "${device.host}:${device.port}",
+                    text = when {
+                        device.host != "cloud" -> "${device.host}:${device.port}"
+                        remoteAvailable -> "Available remotely"
+                        else -> "Saved for quick connect"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = OnSurfaceDim,
                 )
@@ -422,7 +424,7 @@ private fun DeviceCard(device: NexusDevice, isConnected: Boolean, onClick: () ->
             }
 
             // Clean modern badges (no generic templates)
-            if (device.host == "cloud") {
+            if (remoteAvailable) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = Icons.Default.Cloud,

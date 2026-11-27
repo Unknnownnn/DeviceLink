@@ -12,6 +12,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -81,7 +82,7 @@ class NexusWebSocketClient(
     fun connect() {
         _state.value = ConnectionState.Connecting
         val request = Request.Builder()
-            .url("ws://$host:$port/")
+            .url(HttpUrl.Builder().scheme("http").host(host).port(port).build())
             .build()
 
         webSocket = okHttp.newWebSocket(request, object : WebSocketListener() {
