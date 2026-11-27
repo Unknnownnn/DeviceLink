@@ -495,14 +495,19 @@ class SanitizationSandbox:
                 return f"Rejected: Mobile shortcut '{shortcut_id}' is not configured."
 
             exe = shortcut["target"]
-            is_steam = shortcut["type"] == "steam"
+            shortcut_type = shortcut["type"]
+            is_steam = shortcut_type == "steam"
             
             if is_steam:
                 uri = f"steam://run/{exe}"
                 webbrowser.open(uri)
                 return f"Successfully routed shortcut launch request for Steam game: {shortcut_id}"
-            elif exe.startswith("http://") or exe.startswith("https://"):
-                webbrowser.open(exe)
+            elif shortcut_type == "url" or exe.startswith("http://") or exe.startswith("https://"):
+                url = exe
+                # Bare domains like www.youtube.com have no scheme; prepend https:// so the browser can open them.
+                if not (url.startswith("http://") or url.startswith("https://")):
+                    url = "https://" + url
+                webbrowser.open(url)
                 return f"Successfully opened shortcut web link: {shortcut_id}"
             elif exe.lower().endswith((".lnk", ".url")) or exe.lower().startswith("shell:") or (":" in exe and not exe.startswith(("http://", "https://")) and exe.split(":")[0].isalnum()):
                 try:
